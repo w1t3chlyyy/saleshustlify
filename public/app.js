@@ -79,12 +79,12 @@ function sheet(html) {
 const closeSheet = () => document.querySelector('.overlay')?.remove();
 
 function logout(silent) {
-  localStorage.removeItem('h_token'); token = '';
-  Object.assign(S, { user: null, me: null, adminChat: [] });
+  try { localStorage.removeItem('h_token'); } catch {}
+  token = '';
+  Object.assign(S, { user: null, me: null, adminChat: [], assign: {}, leads: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
   renderAuth();
   if (silent) toast('Войдите снова');
 }
-
 function md(src) {
   let s = esc(src)
     .replace(/^### (.*)$/gm, '<h4>$1</h4>').replace(/^## (.*)$/gm, '<h3>$1</h3>').replace(/^# (.*)$/gm, '<h2>$1</h2>')
