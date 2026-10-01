@@ -8,7 +8,7 @@ const money = n => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigit
 const haptic = () => { try { tg?.HapticFeedback?.impactOccurred('light'); } catch {} };
 
 let token = ''; try { token = localStorage.getItem('h_token') || ''; } catch {}
-const S = { user: null, me: null, tab: 'home', wseg: 'today', tseg: 'coins', aseg: 'stats', authMode: 'login', adminChat: [], assign: {}, leads: {}, tasks: {} };
+const S = { user: null, me: null, tab: 'home', wseg: 'today', tseg: 'coins', aseg: 'stats', authMode: 'login', adminChat: [], aiImages: [], assign: {}, leads: {}, tasks: {} };
 
 // ───────── навигация: стек экранов для кнопки «Назад»
 const NAV = [];   // предыдущие экраны: { key, fn }
@@ -51,6 +51,7 @@ const I = {
   shield: ic('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>'),
   out: ic('<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 8l-4 4 4 4M6 12h10"/>'),
   back: ic('<path d="M15 6l-6 6 6 6"/>', 'chev'),
+  clip: ic('<path d="M21 12.5l-8.5 8.5a5 5 0 0 1-7-7L14 5.5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 8"/>'),
 };
 
 // ───────── core
@@ -143,7 +144,7 @@ const closeSheet = () => document.querySelector('.overlay')?.remove();
 function logout(silent) {
   try { localStorage.removeItem('h_token'); } catch {}
   token = '';
-  Object.assign(S, { user: null, me: null, adminChat: [], assign: {}, leads: {}, tasks: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
+  Object.assign(S, { user: null, me: null, adminChat: [], aiImages: [], assign: {}, leads: {}, tasks: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
   resetNav();
   renderAuth();
   if (silent) toast('Войдите снова');
@@ -151,6 +152,8 @@ function logout(silent) {
 
 function md(src) {
   let s = esc(src)
+    // Картинки: только http(s)-ссылки (кавычки уже экранированы в esc)
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<img class="lesson-img" src="$2" alt="$1" loading="lazy">')
     .replace(/^### (.*)$/gm, '<h4>$1</h4>').replace(/^## (.*)$/gm, '<h3>$1</h3>').replace(/^# (.*)$/gm, '<h2>$1</h2>')
     .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
     .replace(/^(?:- |\* )(.*)$/gm, '<li>$1</li>')
@@ -694,20 +697,34 @@ async function aQueue() {
     : `<div class="empty"><b>Очередь пуста</b>Новые работы появятся здесь.</div>`;
 }
 function aAi() {
-  const ch = S.adminChat;
-  $('#abody').innerHTML = `<div class="chat" id="chat">${ch.length ? aiBubbles() : `<div class="list">${['Покажи статистику по платформе', 'Кто ждёт проверки и сколько', 'Добавь в магазин промокод на 15% за 50 коинов'].map(t => `<button class="row" data-act="aiSend" data-t="${esc(t)}"><div class="grow">${esc(t)}</div>${I.chev}</button>`).join('')}</div>`}</div>
-    <div class="composer"><div class="in"><input id="ai" placeholder="Задача для HustlifyAI" data-enter="aiSend" autocomplete="off"><button class="send" data-act="aiSend" aria-label="Отправить">${I.send}</button></div></div>`;
+  const ch = S.adminChat, imgs = S.aiImages || [];
+  $('#abody').innerHTML = `<div class="chat" id="chat">${ch.length ? aiBubbles() : `<div class="list">${['Покажи все разделы обучения', 'Создай раздел для продвигающих «Правила съёмки» и поставь туда мои фото вместо текста', 'Покажи видео-задания'].map(t => `<button class="row" data-act="aiSend" data-t="${esc(t)}"><div class="grow">${esc(t)}</div>${I.chev}</button>`).join('')}</div>`}</div>
+    <div class="composer">
+      ${imgs.length ? `<div class="thumbs">${imgs.map((src, i) => `<div class="thumb"><img src="${src}" alt=""><button data-act="aiImgDel" data-i="${i}" aria-label="Убрать">×</button></div>`).join('')}</div>` : ''}
+      <div class="in">
+        <button class="attach" data-act="aiPick" aria-label="Прикрепить фото">${I.clip}</button>
+        <input id="ai_file" type="file" accept="image/*" multiple hidden>
+        <input id="ai" placeholder="Задача для HustlifyAI" data-enter="aiSend" autocomplete="off">
+        <button class="send" data-act="aiSend" aria-label="Отправить">${I.send}</button>
+      </div></div>`;
 }
-const aiBubbles = () => S.adminChat.map(m => m.role === 'user' ? `<div class="bub u">${esc(m.content)}</div>` : `<div class="bub c prose">${md(m.content)}${m.actions?.length ? `<p class="mut small" style="margin:8px 0 0">Действия: ${esc(m.actions.map(a => a.tool + (a.ok ? '' : ' (ошибка)')).join(', '))}</p>` : ''}</div>`).join('');
+const aiBubbles = () => S.adminChat.map(m => m.role === 'user'
+  ? `<div class="bub u">${esc(m.content)}${m.photos ? `<div class="small" style="opacity:.7;margin-top:4px">📎 Фото: ${m.photos}</div>` : ''}</div>`
+  : `<div class="bub c prose">${md(m.content)}${m.actions?.length ? `<p class="mut small" style="margin:8px 0 0">Действия: ${esc(m.actions.map(a => a.tool + (a.ok ? '' : ' (ошибка)')).join(', '))}</p>` : ''}</div>`).join('');
+
 async function aiSend(text) {
-  text = text || val('ai'); if (!text || S.aiBusy) return;
-  S.aiBusy = true; S.adminChat.push({ role: 'user', content: text });
+  const images = S.aiImages || [];
+  text = text || val('ai');
+  if ((!text && !images.length) || S.aiBusy) return;
+  if (!text) text = 'Вот фото';
+  S.aiBusy = true; S.aiImages = [];
+  S.adminChat.push({ role: 'user', content: text, photos: images.length });
   $('#abody').querySelector('.chat').innerHTML = aiBubbles() + `<div class="bub c typing">думает…</div>`;
   $('#ai').value = ''; window.scrollTo(0, document.body.scrollHeight);
   try {
-    const r = await api('admin.chat', { messages: S.adminChat.map(({ role, content }) => ({ role, content })) });
+    const r = await api('admin.chat', { messages: S.adminChat.map(({ role, content }) => ({ role, content })), images });
     S.adminChat.push({ role: 'assistant', content: r.reply || 'Готово', actions: r.actions });
-  } catch (e) { toast(e.message); S.adminChat.pop(); }
+  } catch (e) { toast(e.message); S.adminChat.pop(); S.aiImages = images; }
   S.aiBusy = false; aAi(); window.scrollTo(0, document.body.scrollHeight);
 }
 
@@ -829,6 +846,8 @@ const A = {
     toast(`${r.worker}: +${money(r.payout)} (${r.percent}%)`); aStats();
   },
   aiSend: d => aiSend(d.t),
+  aiPick: () => $('#ai_file')?.click(),
+  aiImgDel: d => { S.aiImages.splice(Number(d.i), 1); const t = val('ai'); aAi(); $('#ai').value = t; },
   openUrl: d => { const u = safeUrl(d.u); if (!u) return; if (tg?.openLink) tg.openLink(u); else window.open(u, '_blank'); },
   bizSheet, taskSheet, planSheet,
   testVideo: () => open('testvideo', testVideo),
@@ -865,6 +884,17 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.dataset?.enter) return;
   e.preventDefault(); Promise.resolve(A[e.target.dataset.enter]({}, e.target)).catch(err => toast(err.message));
+});
+// Выбор фото для админ-чата HustlifyAI
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'ai_file') return;
+  const files = [...e.target.files].slice(0, 4 - (S.aiImages?.length || 0));
+  e.target.value = '';
+  if (!files.length) return toast('Не больше 4 фото за раз');
+  try {
+    S.aiImages = [...(S.aiImages || []), ...await Promise.all(files.map(f => compress(f, 1280, 0.7)))];
+    const t = val('ai'); aAi(); $('#ai').value = t;
+  } catch (err) { toast(err.message); }
 });
 
 // ───────── boot
