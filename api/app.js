@@ -70,6 +70,27 @@ async function multipliers(user) {
 }
 const rewardOf = (t, k) => ({ money: Math.round(Number(t.reward_money) * k.m * 100) / 100, coins: Math.round(t.reward_coins * k.c) });
 
+const PRACTICE_COOLDOWN_MS = 12 * 3600 * 1000;
+const VALID_ORDER_LINK_RE = /(?:https?:\/\/)?(?:www\.)?hustlify\.site\b|(?:@|https?:\/\/t\.me\/|t\.me\/)?hustlifybot\b/i;
+
+async function practiceRetryAt(user) {
+  if (user.role === 'admin') return null;
+  const { data } = await db.from('practice_sessions')
+    .select('status,finished_at')
+    .eq('user_id', user.id)
+    .not('finished_at', 'is', null)
+    .order('finished_at', { ascending: false })
+    .limit(1);
+  const last = data?.[0];
+  if (last?.status === 'failed' && last.finished_at) {
+    const until = new Date(last.finished_at).getTime() + PRACTICE_COOLDOWN_MS;
+    if (until > Date.now()) return new Date(until).toISOString();
+  }
+  return null;
+}
+
+const practiceMaxTurns = async () => Math.min(Number(await setting('practice_max_turns', 7)) || 7, 7);
+
 // Каталог и кейсы лежат в одной таблице, различаются колонкой section ('catalog' | 'case')
 async function loadKnowledge() {
   const { data, error } = await kb.from(PRODUCTS).select('*').limit(300);
@@ -155,6 +176,7 @@ const H = {
       today_done: (todays || []).filter(a => ['submitted', 'approved'].includes(a.status)).length,
       leads: leads || 0, approved_total: won || 0,
       mentor: mentorUsername(await setting('mentor_username', process.env.MENTOR_USERNAME || '')),
+      practice_retry_at: await practiceRetryAt(user),
     };
   },
 
@@ -175,7 +197,13 @@ const H = {
     need(user.track || user.role === 'admin', 409, 'Сначала выберите роль');
     const items = await lessonsFor(user);
     const allPassed = user.track === 'promoter' ? items.every(i => i.passed) : items.length > 0 && items.every(i => i.passed);
-    return { items, all_passed: allPassed, training_done: user.training_done, lesson_reward: Number(await setting('lesson_reward_coins', 3)) || 0 };
+    return {
+      items,
+      all_passed: allPassed,
+      training_done: user.training_done,
+      lesson_reward: Number(await setting('lesson_reward_coins', 3)) || 0,
+      practice_retry_at: await practiceRetryAt(user),
+    };
   },
 
   async 'learn.lesson'({ user }, { id }) {
@@ -296,18 +324,21 @@ const H = {
     };
   },
 
-  // ── практика с «вредным клиентом»
+  // ── практика с клиентом
   async 'practice.start'({ user }) {
     need(user.track === 'seller' || user.role === 'admin', 403, 'Практика с клиентом только для продающих');
     const items = await lessonsFor(user);
     need(user.training_done || (items.length && items.every(i => i.passed)), 403, 'Сначала пройдите все разделы');
+    const retryAt = await practiceRetryAt(user);
+    need(!retryAt, 429, 'Следующая попытка будет доступна через 12 часов после провала');
+    const max = await practiceMaxTurns();
     const k = await loadKnowledge();
     const persona = qwen.buildPersona(k.products, k.cases);
-    const first = await qwen.clientReply(persona, []);
-    const messages = [{ role: 'assistant', content: first }];
+    const first = await qwen.clientReply(persona, [], max);
+    const messages = [{ role: 'assistant', content: first.reply }];
     const { data, error } = await db.from('practice_sessions').insert({ user_id: user.id, persona, messages }).select().single();
     if (error) throw error;
-    return { session_id: data.id, messages, turns_left: await setting('practice_max_turns', 14) };
+    return { session_id: data.id, messages, turns_left: max };
   },
 
   async 'practice.say'({ user }, { session_id, text }) {
@@ -315,30 +346,108 @@ const H = {
     need(s && s.status === 'active', 404, 'Сессия завершена');
     const msg = String(text || '').trim().slice(0, 1500);
     need(msg, 400, 'Введите сообщение');
-    const max = await setting('practice_max_turns', 14);
+    const max = await practiceMaxTurns();
     const used = s.messages.filter(m => m.role === 'user').length;
     need(used < max, 409, 'Лимит реплик исчерпан. Завершите сделку');
+    const turnsLeft = max - used - 1;
     const messages = [...s.messages, { role: 'user', content: msg }];
-    const reply = await qwen.clientReply(s.persona, messages);
-    messages.push({ role: 'assistant', content: reply });
-    await db.from('practice_sessions').update({ messages }).eq('id', s.id);
-    return { reply, turns_left: max - used - 1 };
+    const hasValidLink = VALID_ORDER_LINK_RE.test(msg);
+
+    let step;
+    if (hasValidLink && (s.persona?.awaiting_link || used >= 1)) {
+      // Клиент получил верный сайт (hustlify.site) или бота (@hustlifybot) — сразу оплачивает и закрывает сделку без лишнего расхода токенов
+      step = {
+        reply: 'Отлично, перешёл по вашей ссылке, всё оформил и уже оплатил заказ! Спасибо за чёткую консультацию, работаем.',
+        outcome: 'passed',
+        awaiting_link: false,
+      };
+    } else if (s.persona?.awaiting_link && !hasValidLink && /(?:https?:\/\/|t\.me\/|@[a-z0-9_]+|[a-z0-9-]+\.(?:ru|com|site|org|net|io|me)\b)/i.test(msg)) {
+      step = {
+        reply: 'Подождите, это какая-то не та ссылка. Пришлите ваш официальный сайт (hustlify.site) или официального бота (@hustlifybot), чтобы я оплатил заказ.',
+        outcome: null,
+        awaiting_link: true,
+      };
+    } else {
+      step = await qwen.clientReply(s.persona || {}, messages, turnsLeft);
+      if (step.outcome === 'passed' && !hasValidLink) {
+        step.outcome = null;
+        step.awaiting_link = true;
+      }
+    }
+
+    if (!step.outcome && turnsLeft <= 0) {
+      step.outcome = 'failed';
+      step.reply = step.reply + ' Ладно, мне пора бежать, мы так и не оформили заказ. Всего доброго.';
+    }
+
+    messages.push({ role: 'assistant', content: step.reply });
+    const persona = { ...(s.persona || {}), awaiting_link: !!step.awaiting_link };
+
+    if (step.outcome === 'passed' || step.outcome === 'failed') {
+      const passed = step.outcome === 'passed';
+      const nowIso = new Date().toISOString();
+      const feedback = passed
+        ? {
+            success: true,
+            score: 95,
+            strengths: ['Быстро расположили клиента к покупке', 'Отправили верный сайт / бота для оплаты заказа'],
+            improvements: [],
+            summary: 'Клиент перешёл по ссылке, оплатил заказ и сам успешно закрыл сделку!',
+          }
+        : {
+            success: false,
+            score: 25,
+            strengths: [],
+            improvements: [
+              'Общайтесь вежливо и по делу, чтобы клиент не закрыл диалог',
+              'Когда клиент готов к заказу, отправляйте hustlify.site или @hustlifybot',
+            ],
+            summary: 'Клиент прекратил разговор, сделка не состоялась. Следующая попытка будет доступна через 12 часов.',
+          };
+      await db.from('practice_sessions').update({
+        persona,
+        messages,
+        status: passed ? 'passed' : 'failed',
+        score: feedback.score,
+        feedback,
+        finished_at: nowIso,
+      }).eq('id', s.id);
+
+      let reward = 0;
+      if (passed && !user.training_done) {
+        reward = await setting('training_reward_coins', 20);
+        await db.rpc('add_coins', { p_user: user.id, p_delta: reward, p_reason: 'Обучение и практика пройдены' });
+        await db.from('users').update({ training_done: true }).eq('id', user.id);
+      }
+      const retry_at = passed ? null : new Date(Date.now() + PRACTICE_COOLDOWN_MS).toISOString();
+      return { reply: step.reply, turns_left: turnsLeft, finished: true, result: { passed, reward, retry_at, ...feedback } };
+    }
+
+    await db.from('practice_sessions').update({ persona, messages }).eq('id', s.id);
+    return { reply: step.reply, turns_left: turnsLeft, awaiting_link: persona.awaiting_link };
   },
 
   async 'practice.finish'({ user }, { session_id }) {
     const { data: s } = await db.from('practice_sessions').select('*').eq('id', session_id).eq('user_id', user.id).maybeSingle();
     need(s && s.status === 'active', 404, 'Сессия уже завершена');
-    need(s.messages.filter(m => m.role === 'user').length >= 3, 400, 'Проведите хотя бы 3 реплики');
+    need(s.messages.filter(m => m.role === 'user').length >= 2, 400, 'Проведите хотя бы 2 реплики');
+    const sentValidLink = s.messages.some(m => m.role === 'user' && VALID_ORDER_LINK_RE.test(m.content));
     const r = await qwen.judge(s.persona, s.messages);
-    const passed = r.success && r.score >= 60;
-    await db.from('practice_sessions').update({ status: passed ? 'passed' : 'failed', score: r.score, feedback: r, finished_at: new Date().toISOString() }).eq('id', s.id);
+    const passed = sentValidLink && r.success && r.score >= 60;
+    if (!sentValidLink && r.improvements) {
+      r.improvements = ['Для успешной оплаты нужно отправить клиенту официальный сайт hustlify.site или бота @hustlifybot', ...r.improvements].slice(0, 4);
+      if (!passed) r.summary = 'Заказ не был оплачен через официальный сайт (hustlify.site) или бота (@hustlifybot). Следующая попытка через 12 часов.';
+    }
+    const nowIso = new Date().toISOString();
+    await db.from('practice_sessions').update({ status: passed ? 'passed' : 'failed', score: r.score, feedback: r, finished_at: nowIso }).eq('id', s.id);
     let reward = 0;
     if (passed && !user.training_done) {
       reward = await setting('training_reward_coins', 20);
       await db.rpc('add_coins', { p_user: user.id, p_delta: reward, p_reason: 'Обучение и практика пройдены' });
       await db.from('users').update({ training_done: true }).eq('id', user.id);
     }
-    return { passed, reward, ...r };
+    const retry_at = passed ? null : new Date(Date.now() + PRACTICE_COOLDOWN_MS).toISOString();
+    return { passed, reward, retry_at, ...r };
   },
 
   // ── работа по базе

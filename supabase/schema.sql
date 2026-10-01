@@ -307,7 +307,7 @@ insert into settings(key, value) values
   ('business_reward_coins', '10'),
   ('daily_batch', '15'),
   ('quiz_pass_percent', '70'),
-  ('practice_max_turns', '14'),
+  ('practice_max_turns', '6'),
   ('percent_tiers', '[[0,5],[8,7],[20,10],[40,12]]')
 on conflict (key) do nothing;
 

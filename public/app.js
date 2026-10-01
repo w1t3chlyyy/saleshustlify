@@ -77,14 +77,47 @@ async function api(action, data = {}) {
   return j;
 }
 
-let toastT;
+let toastT, cooldownT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
+function fmtLeft(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  const h = String(Math.floor(s / 3600)).padStart(2, '0');
+  const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const sec = String(s % 60).padStart(2, '0');
+  return `${h}:${m}:${sec}`;
+}
+
+function bindCooldown(retryIso) {
+  clearInterval(cooldownT);
+  if (!retryIso) return;
+  const until = new Date(retryIso).getTime();
+  const tick = () => {
+    const el = $('#p_timer');
+    const btn = $('#p_start_btn');
+    if (!el) { clearInterval(cooldownT); return; }
+    const left = until - Date.now();
+    if (left <= 0) {
+      clearInterval(cooldownT);
+      S.practiceRetryAt = null;
+      if (S.me) S.me.practice_retry_at = null;
+      const box = $('#p_cooldown_box');
+      if (box) box.remove();
+      if (btn) { btn.disabled = false; btn.textContent = 'Начать диалог'; }
+      return;
+    }
+    el.textContent = fmtLeft(left);
+  };
+  tick();
+  cooldownT = setInterval(tick, 1000);
+}
+
 // Каждый экран получает сверху кнопку «Назад», если есть куда возвращаться
 function view(html, { tabbar = false, back: showBack = true } = {}) {
+  clearInterval(cooldownT);
   closeSheet();
   const bar = showBack && NAV.length
     ? `<div class="topbar"><div class="inner"><button data-act="back" aria-label="Назад">${I.back}Назад</button></div></div>`
@@ -187,7 +220,7 @@ function renderAuth() {
 
 // Точка входа после авторизации: сбрасывает историю и открывает корневой экран
 async function enter() {
-  const m = await api('me'); S.me = m; S.user = m.user;
+  const m = await api('me'); S.me = m; S.user = m.user; S.practiceRetryAt = m.practice_retry_at || null;
   resetNav();
   if (!S.user.track && S.user.role !== 'admin') { cur = { key: 'role', fn: roleScreen }; return roleScreen(); }
   if (!S.user.training_done && S.user.role !== 'admin') {
@@ -298,8 +331,11 @@ async function go(tab) {
 async function learnHome() {
   loading();
   const d = await api('learn.lessons');
+  S.practiceRetryAt = d.practice_retry_at || null;
+  if (S.me) S.me.practice_retry_at = S.practiceRetryAt;
   const trained = S.user.training_done;
   const done = d.items.filter(i => i.passed).length, total = d.items.length;
+  const retryActive = S.practiceRetryAt && new Date(S.practiceRetryAt).getTime() > Date.now();
   const rows = d.items.map(l => `
     <button class="row" data-act="lesson" data-id="${l.id}" ${l.unlocked ? '' : 'disabled'} style="${l.unlocked ? '' : 'opacity:.4'}">
       ${l.passed ? I.check : l.unlocked ? I.book : I.lock}
@@ -313,7 +349,7 @@ async function learnHome() {
     ${total ? `<div class="list">${rows}</div>` : ''}
     <h2 class="h2">Финал</h2>
     <div class="list"><button class="row" data-act="${S.user.track === 'promoter' ? 'testVideo' : 'practiceIntro'}" ${d.all_passed || trained ? '' : 'disabled'} style="${d.all_passed || trained ? '' : 'opacity:.4'}">
-      ${I.chat}<div class="grow"><div class="t">${S.user.track === 'promoter' ? 'Тестовое видео' : 'Практика с клиентом'}</div><div class="d">${d.all_passed || trained ? (S.user.track === 'promoter' ? 'Снимите видео по ТЗ, руководитель его проверит' : 'Убедите вредного клиента купить') : 'Откроется после всех разделов'}</div></div>${I.chev}
+      ${I.chat}<div class="grow"><div class="t">${S.user.track === 'promoter' ? 'Тестовое видео' : 'Практика с клиентом'}</div><div class="d">${d.all_passed || trained ? (S.user.track === 'promoter' ? 'Снимите видео по ТЗ, руководитель его проверит' : retryActive ? 'Доступно по таймеру через 12 ч после неудачной попытки' : 'Короткий диалог с клиентом и отправка ссылки на заказ') : 'Откроется после всех разделов'}</div></div>${I.chev}
     </button></div>
     ${trained ? '' : `<button class="btn ghost" style="margin-top:26px" data-act="logout">Выйти</button>`}
   </div>`, { tabbar: trained });
@@ -391,29 +427,60 @@ async function quizFinish() {
 
 // ───────── practice
 function practiceIntro() {
+  const retryIso = S.practiceRetryAt || S.me?.practice_retry_at || null;
+  const leftMs = retryIso ? new Date(retryIso).getTime() - Date.now() : 0;
+  const locked = leftMs > 0;
   view(`<div class="screen no-tab">
     <h1 class="title">Практика с клиентом</h1>
-    <p class="sub">Перед вами вредный клиент с характером. Он возражает, торгуется и проверяет, знаете ли вы продукт. Ваша задача — выявить потребность и довести его до покупки.</p>
+    <p class="sub">Короткий диалог с заинтересованным клиентом. Ответьте по делу, доведите до заказа и отправьте официальный сайт или бота.</p>
     <div class="list">
-      <div class="row"><div class="grow"><div class="t">Говорите как с живым человеком</div><div class="d">Задавайте вопросы и отвечайте на возражения по сути</div></div></div>
-      <div class="row"><div class="grow"><div class="t">Опирайтесь на факты</div><div class="d">Клиент знает каталог и кейсы и поймает на неточности</div></div></div>
-      <div class="row"><div class="grow"><div class="t">Завершите сделку сами</div><div class="d">Нажмите «Завершить», когда договорились или поняли, что всё</div></div></div>
+      <div class="row"><div class="grow"><div class="t">Коротко и вежливо</div><div class="d">Клиент лоялен, но если грубить или лить воду — он сам закроет диалог</div></div></div>
+      <div class="row"><div class="grow"><div class="t">Оформление заказа</div><div class="d">Когда клиент попросит сайт или бота, пришлите hustlify.site или @hustlifybot</div></div></div>
+      <div class="row"><div class="grow"><div class="t">Автозакрытие сделки</div><div class="d">Проверив верную ссылку, клиент сам оплатит заказ и завершит практику</div></div></div>
     </div>
-    <button class="btn" style="margin-top:24px" data-act="practiceStart">Начать диалог</button>
+    ${locked ? `<div class="card" id="p_cooldown_box" style="margin-top:18px;text-align:center">
+      <div class="mut small">Следующая попытка будет доступна через</div>
+      <div style="font-family:var(--fd);font-size:24px;font-weight:700;margin-top:6px" id="p_timer">${fmtLeft(leftMs)}</div>
+    </div>` : ''}
+    <button class="btn" id="p_start_btn" style="margin-top:24px" data-act="practiceStart" ${locked ? 'disabled' : ''}>${locked ? 'Ожидание таймера…' : 'Начать диалог'}</button>
   </div>`);
+  if (locked) bindCooldown(retryIso);
 }
+
+function practiceResultView(r, lastReply) {
+  S.practiceRetryAt = r.retry_at || null;
+  if (S.me) S.me.practice_retry_at = S.practiceRetryAt;
+  if (r.passed && S.user) S.user.training_done = true;
+  const leftMs = S.practiceRetryAt ? new Date(S.practiceRetryAt).getTime() - Date.now() : 0;
+  const locked = !r.passed && leftMs > 0;
+  const list = (t, a) => a?.length ? `<h2 class="h2">${t}</h2><div class="list">${a.map(x => `<div class="row"><div class="grow">${esc(x)}</div></div>`).join('')}</div>` : '';
+  view(`<div class="screen no-tab">
+    <div class="hero"><div class="num">${r.passed && r.reward ? '+' + r.reward : r.score}</div>
+    <div class="cap">${r.passed ? (r.reward ? 'HustlifyCoin начислены · Сделка закрыта' : 'Клиент оплатил и закрыл сделку') : 'Сделка не состоялась'}</div></div>
+    ${lastReply ? `<div class="card" style="margin-bottom:14px"><div class="mut small" style="margin-bottom:4px">Сообщение клиента</div>${esc(lastReply)}</div>` : ''}
+    <p>${esc(r.summary)}</p>
+    ${locked ? `<div class="card" id="p_cooldown_box" style="margin-top:16px;text-align:center">
+      <div class="mut small">Следующая попытка через</div>
+      <div style="font-family:var(--fd);font-size:24px;font-weight:700;margin-top:6px" id="p_timer">${fmtLeft(leftMs)}</div>
+    </div>` : ''}
+    ${list('Получилось', r.strengths)}${list('Что улучшить', r.improvements)}
+    <button class="btn" id="p_start_btn" style="margin-top:26px" data-act="${r.passed ? 'toCabinet' : 'practiceStart'}" ${locked ? 'disabled' : ''}>${r.passed ? 'В личный кабинет' : locked ? 'Повтор через 12 часов' : 'Попробовать снова'}</button>
+  </div>`);
+  if (locked) bindCooldown(S.practiceRetryAt);
+}
+
 async function practiceStart() {
   loading('Клиент готовится к разговору…');
   try {
     const d = await api('practice.start');
     S.p = { id: d.session_id, msgs: d.messages, left: d.turns_left, busy: false };
     chatRender();
-  } catch (e) { toast(e.message); backTo('learn', learnHome); }
+  } catch (e) { toast(e.message); backTo('practiceIntro', practiceIntro); }
 }
 function bubbles(list) { return list.map(m => `<div class="bub ${m.role === 'user' ? 'u' : 'c'}">${esc(m.content)}</div>`).join(''); }
 function chatRender() {
   const p = S.p;
-  view(`<div class="screen no-tab"><h1 class="title" style="font-size:20px">Клиент</h1><p class="sub small">Убедите его купить Hustlify</p>
+  view(`<div class="screen no-tab"><h1 class="title" style="font-size:20px">Клиент</h1><p class="sub small">Убедите его купить и отправьте hustlify.site или @hustlifybot</p>
     <div class="chat" id="chat">${bubbles(p.msgs)}</div></div>
     <div class="composer"><div class="top"><span id="left">Реплик осталось: ${p.left}</span><button class="link" data-act="practiceFinish">Завершить сделку</button></div>
     <div class="in"><input id="say" placeholder="Ваш ответ клиенту" data-enter="practiceSay" autocomplete="off"><button class="send" data-act="practiceSay" aria-label="Отправить">${I.send}</button></div></div>`);
@@ -429,24 +496,27 @@ async function practiceSay() {
   try {
     const r = await api('practice.say', { session_id: p.id, text });
     p.msgs.push({ role: 'assistant', content: r.reply }); p.left = r.turns_left;
+    if (r.finished && r.result) {
+      $('#chat').innerHTML = bubbles(p.msgs);
+      $('#left').textContent = r.result.passed ? 'Клиент оплатил заказ!' : 'Клиент завершил диалог';
+      window.scrollTo(0, document.body.scrollHeight);
+      setTimeout(() => practiceResultView(r.result, r.reply), 900);
+      return;
+    }
   } catch (e) { toast(e.message); p.msgs.pop(); $('#say').value = text; }
   p.busy = false;
-  $('#chat').innerHTML = bubbles(p.msgs); $('#left').textContent = 'Реплик осталось: ' + p.left;
-  window.scrollTo(0, document.body.scrollHeight);
+  if ($('#chat')) {
+    $('#chat').innerHTML = bubbles(p.msgs);
+    $('#left').textContent = 'Реплик осталось: ' + p.left;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
 }
 async function practiceFinish() {
-  if (S.p.msgs.filter(m => m.role === 'user').length < 3) return toast('Проведите хотя бы 3 реплики');
+  if (S.p.msgs.filter(m => m.role === 'user').length < 2) return toast('Проведите хотя бы 2 реплики');
   loading('Руководитель оценивает диалог…');
   try {
     const r = await api('practice.finish', { session_id: S.p.id });
-    const list = (t, a) => a?.length ? `<h2 class="h2">${t}</h2><div class="list">${a.map(x => `<div class="row"><div class="grow">${esc(x)}</div></div>`).join('')}</div>` : '';
-    view(`<div class="screen no-tab">
-      <div class="hero"><div class="num">${r.passed && r.reward ? '+' + r.reward : r.score}</div>
-      <div class="cap">${r.passed ? (r.reward ? 'HustlifyCoin начислены' : 'Сделка закрыта') : 'Клиент не купил'}</div></div>
-      <p>${esc(r.summary)}</p>
-      ${list('Получилось', r.strengths)}${list('Что улучшить', r.improvements)}
-      <button class="btn" style="margin-top:26px" data-act="${r.passed ? 'toCabinet' : 'practiceStart'}">${r.passed ? 'В личный кабинет' : 'Попробовать снова'}</button>
-    </div>`);
+    practiceResultView(r);
   } catch (e) { toast(e.message); chatRender(); }
 }
 
