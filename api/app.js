@@ -157,7 +157,7 @@ const H = {
     if (!quiz) {
       const { data: lesson } = await db.from('lessons').select('*').eq('id', lesson_id).single();
       const { data: prev } = await db.from('quizzes').select('questions,answers').eq('user_id', user.id).eq('lesson_id', lesson_id).not('finished_at', 'is', null).order('created_at', { ascending: false }).limit(3);
-      const questions = await qwen.genQuiz(lesson, prev || []);
+      const questions = await qwen.genQuiz(lesson, prev || [], await loadKnowledge());
       const ins = await db.from('quizzes').insert({ user_id: user.id, lesson_id, questions }).select().single();
       if (ins.error) throw ins.error;
       quiz = ins.data;
@@ -341,7 +341,12 @@ const H = {
   },
 
   // ── админка
-  async 'admin.stats'() { return stats(); },
+  async 'admin.stats'() {
+    const k = await loadKnowledge();
+    const sent = qwen.compact(k.products, 5000).length + qwen.compact(k.cases, 3000).length;
+    const full = qwen.compact(k.products, 1e9).length + qwen.compact(k.cases, 1e9).length;
+    return { ...(await stats()), kb_products: k.products.length, kb_cases: k.cases.length, kb_sent: sent, kb_full: full };
+  },
 
   async 'admin.queue'() {
     const { data } = await db.from('assignments').select('*, business:businesses(*), user:users(full_name,login)')
