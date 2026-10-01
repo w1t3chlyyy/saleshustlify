@@ -1,4 +1,4 @@
-const { db, kb, setting, Http } = require('../lib/db');
+const { db, kb, setting, Http, parseLessonRow, resolveLessonBody } = require('../lib/db');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
@@ -104,16 +104,18 @@ async function loadKnowledge() {
 
 async function lessonsFor(user) {
   const track = user.track || 'seller';
-  const { data: lessons } = await db.from('lessons').select('id,position,title')
-    .eq('is_published', true).in('audience', ['all', track]).order('position').order('id');
+  const { data: rawLessons } = await db.from('lessons').select('*')
+    .eq('is_published', true).order('position').order('id');
+  const lessons = (rawLessons || []).map(parseLessonRow)
+    .filter(l => (user.role === 'admin' && !user.track) ? true : ['all', track].includes(l.audience || 'all'));
   const { data: prog } = await db.from('lesson_progress').select('*').eq('user_id', user.id);
   const map = Object.fromEntries((prog || []).map(p => [p.lesson_id, p]));
   let prevPassed = true;
-  const items = (lessons || []).map(l => {
+  const items = lessons.map(l => {
     const passed = !!map[l.id]?.passed;
     const unlocked = user.training_done || prevPassed;
     prevPassed = passed;
-    return { id: l.id, title: l.title, passed, best_score: map[l.id]?.best_score || 0, unlocked };
+    return { id: l.id, title: l.title, audience: l.audience, passed, best_score: map[l.id]?.best_score || 0, unlocked };
   });
   return items;
 }
@@ -212,7 +214,8 @@ const H = {
     need(it, 404, 'Урок не найден');
     need(it.unlocked, 403, 'Сначала пройдите предыдущий раздел');
     const { data } = await db.from('lessons').select('id,title,body').eq('id', id).single();
-    return { lesson: data, passed: it.passed };
+    const resolvedBody = await resolveLessonBody(data?.body || '');
+    return { lesson: { ...data, body: resolvedBody }, passed: it.passed };
   },
 
   async 'quiz.start'({ user }, { lesson_id, can_edit }) {
@@ -782,8 +785,8 @@ const H = {
     return { ok: true };
   },
 
-  async 'admin.chat'({ user: admin }, { messages }) {
-    return chatWithAdminAgent(admin, messages);
+  async 'admin.chat'({ user: admin }, { messages, images }) {
+    return chatWithAdminAgent(admin, messages, images);
   },
 };
 
