@@ -8,7 +8,7 @@ const money = n => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigit
 const haptic = () => { try { tg?.HapticFeedback?.impactOccurred('light'); } catch {} };
 
 let token = ''; try { token = localStorage.getItem('h_token') || ''; } catch {}
-const S = { user: null, me: null, tab: 'home', wseg: 'today', tseg: 'coins', aseg: 'stats', authMode: 'login', adminChat: [], assign: {}, leads: {} };
+const S = { user: null, me: null, tab: 'home', wseg: 'today', tseg: 'coins', aseg: 'stats', authMode: 'login', adminChat: [], assign: {}, leads: {}, tasks: {} };
 
 // ───────── навигация: стек экранов для кнопки «Назад»
 const NAV = [];   // предыдущие экраны: { key, fn }
@@ -110,7 +110,7 @@ const closeSheet = () => document.querySelector('.overlay')?.remove();
 function logout(silent) {
   try { localStorage.removeItem('h_token'); } catch {}
   token = '';
-  Object.assign(S, { user: null, me: null, adminChat: [], assign: {}, leads: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
+  Object.assign(S, { user: null, me: null, adminChat: [], assign: {}, leads: {}, tasks: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
   resetNav();
   renderAuth();
   if (silent) toast('Войдите снова');
@@ -150,7 +150,23 @@ function compress(file, max = 1400, q = 0.72) {
 }
 
 const val = id => ($('#' + id)?.value ?? '').trim();
-const STATUS = { assigned: 'В работе', submitted: 'На проверке', approved: 'Принято', rejected: 'Доработать' };
+const STATUS = { assigned: 'Доступна', in_work: 'В работе', submitted: 'На проверке', approved: 'Принято', rejected: 'Доработать' };
+const safeUrl = u => (/^https?:\/\//i.test(u || '') ? u : '');
+const handle = (v, base) => (/^https?:\/\//i.test(v) ? v : base + String(v).replace(/^@/, '').trim());
+// Контакты приходят из внешних баз, поэтому разрешаем только https и mailto
+function contactLinks(c = {}) {
+  const L = [];
+  if (c.email) L.push(['Email', 'mailto:' + c.email, c.email]);
+  if (c.telegram) L.push(['Telegram', handle(c.telegram, 'https://t.me/'), c.telegram]);
+  if (c.whatsapp) L.push(['WhatsApp', 'https://wa.me/' + String(c.whatsapp).replace(/\D/g, ''), c.whatsapp]);
+  if (c.vk) L.push(['ВКонтакте', handle(c.vk, 'https://vk.com/'), c.vk]);
+  if (c.instagram) L.push(['Instagram', handle(c.instagram, 'https://instagram.com/'), c.instagram]);
+  if (c.facebook) L.push(['Facebook', handle(c.facebook, 'https://facebook.com/'), c.facebook]);
+  return L.filter(([, h]) => /^(https?:|mailto:)/i.test(h));
+}
+const linkEl = (h, text, cls = 'link') => h.startsWith('mailto:')
+  ? `<a class="${cls}" href="${esc(h)}">${text}</a>`
+  : `<a class="${cls}" href="${esc(h)}" data-act="openUrl" data-u="${esc(h)}">${text}</a>`;
 
 // ───────── auth
 function renderAuth() {
@@ -173,12 +189,98 @@ function renderAuth() {
 async function enter() {
   const m = await api('me'); S.me = m; S.user = m.user;
   resetNav();
+  if (!S.user.track && S.user.role !== 'admin') { cur = { key: 'role', fn: roleScreen }; return roleScreen(); }
   if (!S.user.training_done && S.user.role !== 'admin') {
     cur = { key: 'learn', fn: learnHome };
     return learnHome();
   }
   S.tab = 'home'; cur = { key: 'tab:home', fn: () => go('home') };
   renderTabbar(); return pages.home();
+}
+
+function roleScreen() {
+  view(`<div class="screen no-tab">
+    <h1 class="title">Кто вы в Hustlify?</h1>
+    <p class="sub">От выбора зависит обучение и задания. Потом роль сможет изменить только администратор.</p>
+    <div class="list">
+      <button class="row" data-act="roleSet" data-k="seller">${I.work}<div class="grow"><div class="t">Я продаю</div><div class="d">Ищу клиентов, веду переговоры, получаю процент с продаж</div></div>${I.chev}</button>
+      <button class="row" data-act="roleSet" data-k="promoter">${I.chat}<div class="grow"><div class="t">Я продвигаю проект</div><div class="d">Снимаю видео по заданиям, получаю оплату за каждое</div></div>${I.chev}</button>
+    </div></div>`, { back: false });
+}
+
+const videoForm = id => `<label class="field" style="margin-top:14px"><span>Ссылка на видео (Google Drive, Яндекс Диск, YouTube…)</span><input id="v_url" inputmode="url" autocapitalize="none" placeholder="https://"></label>
+  <label class="field"><span>Комментарий (по желанию)</span><textarea id="v_note"></textarea></label>
+  <button class="btn" data-act="promoSend" data-id="${id}">Отправить на проверку</button>`;
+
+async function testVideo() {
+  loading();
+  const d = await api('promo.test');
+  const t = d.task, s = d.submission;
+  const st = s?.status;
+  view(`<div class="screen no-tab">
+    <p class="mut small">Тестовое видео</p>
+    <h1 class="title">${esc(t.title)}</h1>
+    <div class="prose" style="margin-top:18px">${md(t.brief || '')}</div>
+    ${st === 'rejected' && s.reviewer_note ? `<div class="note">Комментарий: ${esc(s.reviewer_note)}</div>` : ''}
+    ${st === 'submitted' ? `<div class="note">Видео на проверке. Когда руководитель его посмотрит, придёт уведомление в Telegram.</div>` : ''}
+    ${st === 'approved' ? `<div class="note">Принято!</div><button class="btn" style="margin-top:20px" data-act="toCabinet">В личный кабинет</button>` : ''}
+    ${!st || st === 'rejected' ? videoForm(t.id) : ''}
+  </div>`);
+}
+
+function bizSheet(d) {
+  const a = S.assign[d.id], b = a.business || {}, m = b.maps || {};
+  const rows = [];
+  if (b.phone) rows.push(`<div class="row"><div class="grow"><div class="d">Телефон</div><div class="t">${esc(b.phone)}</div></div><a class="link" href="tel:${esc(b.phone.replace(/[^+\d]/g, ''))}">Позвонить</a></div>`);
+  for (const [label, href, text] of contactLinks(b.contacts)) rows.push(`<div class="row"><div class="grow"><div class="d">${label}</div><div class="t">${esc(text)}</div></div>${linkEl(href, 'Открыть')}</div>`);
+  const action = a.status === 'assigned' ? `<button class="btn" data-act="take" data-id="${a.id}">Взять в работу</button>`
+    : ['in_work', 'rejected'].includes(a.status) ? `<button class="btn" data-act="proofSheet" data-id="${a.id}">Отправить результат</button>` : '';
+  sheet(`<h3>${esc(b.name)}</h3>
+    ${b.category ? `<div class="meta mut small">${esc(b.category)}</div>` : ''}
+    ${b.address ? `<div class="meta mut small">${esc(b.address)}</div>` : ''}
+    ${b.info ? `<div class="note">${esc(b.info)}</div>` : ''}
+    ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
+    ${rows.length ? `<div class="list" style="margin:14px 0">${rows.join('')}</div>` : ''}
+    <div style="display:flex;gap:10px;margin:14px 0">
+      ${linkEl(m.yandex, 'Яндекс Карты', 'btn ghost sm')}${linkEl(m.gis, '2ГИС', 'btn ghost sm')}
+    </div>
+    ${action}`);
+}
+
+async function promoWork() {
+  view(`<div class="screen"><h1 class="title">Задания</h1><p class="sub">Видео-задания от руководителя</p><div id="wbody"><div class="spin"></div></div></div>`, { tabbar: true });
+  try {
+    const d = await api('promo.tasks');
+    S.tasks = Object.fromEntries(d.items.map(t => [t.id, t]));
+    const PS = { submitted: 'На проверке', approved: 'Принято', rejected: 'Доработать' };
+    const planCard = d.plan === 'pro' ? '' : `<div class="card" style="margin-bottom:16px"><b style="font-family:var(--fd)">Тариф «Работник»</b>
+      <p class="mut small" style="margin:6px 0 14px">На Pro больше коинов и выше оплата, но нужен хороший монтаж. Переход рассматривает руководитель.</p>
+      ${d.plan_pending ? `<span class="pill">Заявка на рассмотрении</span>` : `<button class="btn sm" data-act="planSheet">Подать заявку на Pro</button>`}</div>`;
+    $('#wbody').innerHTML = planCard + (d.items.length ? d.items.map(t => `
+      <div class="biz" data-act="taskSheet" data-id="${t.id}" style="cursor:pointer">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h3>${esc(t.title)}</h3>
+          <span class="pill ${t.sub?.status === 'approved' ? 'solid' : ''}">${t.locked ? 'Только Pro' : t.sub ? PS[t.sub.status] : 'Новое'}</span></div>
+        <div class="meta">${money(t.reward_money)}${t.reward_coins ? ` + ${t.reward_coins} HustlifyCoin` : ''}${t.deadline ? ` · до ${new Date(t.deadline).toLocaleDateString('ru-RU')}` : ''}</div>
+      </div>`).join('') : `<div class="empty"><b>Заданий пока нет</b>Новые появятся здесь, придёт уведомление.</div>`);
+  } catch (e) { $('#wbody').innerHTML = errBlock(e); }
+}
+
+function taskSheet(d) {
+  const t = S.tasks[d.id], s = t.sub, st = s?.status;
+  sheet(`<h3>${esc(t.title)}</h3>
+    <p class="mut small" style="margin:0 0 12px">Оплата: ${money(t.reward_money)}${t.reward_coins ? ` + ${t.reward_coins} HustlifyCoin` : ''}${t.deadline ? ` · до ${new Date(t.deadline).toLocaleDateString('ru-RU')}` : ''}</p>
+    <div class="prose">${md(t.brief || '')}</div>
+    ${st === 'rejected' && s.reviewer_note ? `<div class="note">Комментарий: ${esc(s.reviewer_note)}</div>` : ''}
+    ${t.locked ? `<div class="note">Задание доступно на тарифе Pro</div>` : st === 'submitted' ? `<div class="note">Видео на проверке</div>` : st === 'approved' ? `<div class="note">Принято, оплата начислена</div>` : ''}
+    ${!t.locked && (!st || st === 'rejected') ? videoForm(t.id) : ''}`);
+}
+
+function planSheet() {
+  sheet(`<h3>Заявка на тариф Pro</h3>
+    <p class="mut small">Приложите ссылку на ваш самый сильный монтаж. Руководитель посмотрит и решит.</p>
+    <label class="field"><span>Ссылка на пример</span><input id="pl_url" inputmode="url" autocapitalize="none" placeholder="https://"></label>
+    <label class="field"><span>Чем владеете (программы, опыт)</span><textarea id="pl_note"></textarea></label>
+    <button class="btn" data-act="planSend">Отправить заявку</button>`);
 }
 
 // ───────── tabs
@@ -210,8 +312,8 @@ async function learnHome() {
     <div class="bar" style="margin:0 0 22px"><i style="width:${total ? done / total * 100 : 0}%"></i></div>
     ${total ? `<div class="list">${rows}</div>` : ''}
     <h2 class="h2">Финал</h2>
-    <div class="list"><button class="row" data-act="practiceIntro" ${d.all_passed || trained ? '' : 'disabled'} style="${d.all_passed || trained ? '' : 'opacity:.4'}">
-      ${I.chat}<div class="grow"><div class="t">Практика с клиентом</div><div class="d">${d.all_passed || trained ? 'Убедите вредного клиента купить' : 'Откроется после всех разделов'}</div></div>${I.chev}
+    <div class="list"><button class="row" data-act="${S.user.track === 'promoter' ? 'testVideo' : 'practiceIntro'}" ${d.all_passed || trained ? '' : 'disabled'} style="${d.all_passed || trained ? '' : 'opacity:.4'}">
+      ${I.chat}<div class="grow"><div class="t">${S.user.track === 'promoter' ? 'Тестовое видео' : 'Практика с клиентом'}</div><div class="d">${d.all_passed || trained ? (S.user.track === 'promoter' ? 'Снимите видео по ТЗ, руководитель его проверит' : 'Убедите вредного клиента купить') : 'Откроется после всех разделов'}</div></div>${I.chev}
     </button></div>
     ${trained ? '' : `<button class="btn ghost" style="margin-top:26px" data-act="logout">Выйти</button>`}
   </div>`, { tabbar: trained });
@@ -330,26 +432,27 @@ async function practiceFinish() {
 const pages = {};
 pages.home = async () => {
   const m = await api('me'); S.me = m; S.user = m.user;
-  const u = m.user, first = u.full_name.split(' ')[0];
+  const u = m.user, first = u.full_name.split(' ')[0], promoter = u.track === 'promoter';
   const pct = m.today_total ? m.today_done / m.today_total * 100 : 0;
   view(`<div class="screen">
     <p class="sub" style="margin-bottom:0">Привет, ${esc(first)}</p>
     <div class="hero"><div class="num" id="coinnum" data-v="${u.coins}">0</div><div class="cap">HustlifyCoin</div></div>
     <div class="grid2">
       <div class="card stat"><b>${money(u.balance)}</b><span>Баланс</span></div>
-      <div class="card stat"><b>${m.percent}%</b><span>Ваш процент с продаж</span></div>
+      ${promoter ? `<div class="card stat"><b>${u.plan === 'pro' ? 'Pro' : 'Работник'}</b><span>Ваш тариф</span></div>`
+        : `<div class="card stat"><b>${m.percent}%</b><span>Ваш процент с продаж</span></div>`}
     </div>
-    <div class="card" style="margin-bottom:12px">
+    ${promoter ? '' : `<div class="card" style="margin-bottom:12px">
       <b>Сегодня</b>
       <p class="mut small" style="margin:4px 0 0">${m.today_total ? `Отправлено на проверку: ${m.today_done} из ${m.today_total}` : 'Подборка на сегодня ещё не получена'}</p>
       <div class="bar"><i style="width:${pct}%"></i></div>
       ${m.next ? `<p class="mut small" style="margin:12px 0 0">До ставки ${m.next[1]}% осталось закрыть ${m.next[0] - m.approved30} бизнес(а) за 30 дней</p>` : ''}
-    </div>
+    </div>`}
     <div class="list">
-      <button class="row" data-act="tab" data-k="work">${I.work}<div class="grow"><div class="t">Взять подборку</div><div class="d">Бизнесы без сайта в вашем городе</div></div>${I.chev}</button>
+      <button class="row" data-act="tab" data-k="work">${I.work}<div class="grow"><div class="t">${promoter ? 'Задания' : 'Взять подборку'}</div><div class="d">${promoter ? 'Видео-задания от руководителя' : 'Бизнесы без сайта в вашем городе'}</div></div>${I.chev}</button>
       <button class="row" data-act="mentor">${I.me}<div class="grow"><div class="t">Связаться с наставником</div><div class="d">Вопросы по работе, разбор сделок</div></div>${I.chev}</button>
       <button class="row" data-act="learnHome">${I.book}<div class="grow"><div class="t">Методичка</div><div class="d">Все материалы обучения</div></div>${I.chev}</button>
-      <button class="row" data-act="practiceIntro">${I.chat}<div class="grow"><div class="t">Тренировка с клиентом</div><div class="d">Отработайте возражения</div></div>${I.chev}</button>
+      ${promoter ? '' : `<button class="row" data-act="practiceIntro">${I.chat}<div class="grow"><div class="t">Тренировка с клиентом</div><div class="d">Отработайте возражения</div></div>${I.chev}</button>`}
     </div>
   </div>`, { tabbar: true });
   countUp();
@@ -359,6 +462,7 @@ pages.home = async () => {
 const segHtml = (act, cur, items) => `<div class="seg">${items.map(([k, l]) => `<button data-act="${act}" data-k="${k}" class="${cur === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 
 pages.work = async () => {
+  if (S.user.track === 'promoter') return promoWork();
   view(`<div class="screen"><h1 class="title">Работа</h1><p class="sub">Ищите клиентов сами или работайте по базе</p>
     ${segHtml('wseg', S.wseg, [['today', 'Сегодня'], ['history', 'История'], ['leads', 'Клиенты']])}
     <div id="wbody"><div class="spin"></div></div></div>`, { tabbar: true });
@@ -369,26 +473,28 @@ pages.work = async () => {
 function bizCard(a) {
   const b = a.business || {};
   S.assign[a.id] = a;
-  return `<div class="biz">
+  return `<div class="biz" data-act="bizSheet" data-id="${a.id}" style="cursor:pointer">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h3>${esc(b.name)}</h3><span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span></div>
     ${b.category ? `<div class="meta">${esc(b.category)}</div>` : ''}
-    ${b.address ? `<div class="meta">${esc(b.address)}</div>` : ''}
-    ${b.info ? `<div class="meta" style="margin-top:6px">${esc(b.info)}</div>` : ''}
-    ${b.phone ? `<a class="phone" href="tel:${esc(b.phone.replace(/[^+\d]/g, ''))}">${esc(b.phone)}</a>` : ''}
+    ${a.status === 'in_work' && a.taken_at ? `<div class="meta">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
-    ${['assigned', 'rejected'].includes(a.status) ? `<div class="foot"><span class="mut small">Свяжитесь и отправьте результат</span><button class="btn sm" data-act="proofSheet" data-id="${a.id}">Отправить</button></div>` : ''}
+    ${a.status === 'assigned' ? `<div class="foot"><span class="mut small">Подробности по нажатию</span><button class="btn sm" data-act="take" data-id="${a.id}">Взять в работу</button></div>` : ''}
   </div>`;
 }
 
 async function wToday() {
   const d = await api('base.today');
-  if (!d.items.length) return `<div class="card">
+  const picker = `<div class="card" style="margin-bottom:16px">
     <b style="font-family:var(--fd)">Выберите город</b>
-    <p class="mut small" style="margin:6px 0 14px">Получите ${d.limit} бизнесов без сайта: название, адрес, телефон и краткая информация. Новая подборка — раз в сутки.</p>
+    <p class="mut small" style="margin:6px 0 14px">Получите ${d.limit} бизнесов без сайта. Новая подборка раз в сутки. Взятые в работу остаются с вами, пока вы не отправите результат.</p>
     <label class="field"><input id="city" placeholder="Например, Казань" value="${esc(d.city)}" data-enter="getBase"></label>
     <button class="btn" data-act="getBase">Получить подборку</button></div>`;
-  const sent = d.items.filter(a => ['submitted', 'approved'].includes(a.status)).length;
-  return `<p class="mut small" style="margin:0 0 14px">Город: ${esc(d.city)}. Отправлено ${sent} из ${d.items.length}.</p>` + d.items.map(bizCard).join('');
+  if (!d.items.length) return picker;
+  const order = { in_work: 0, rejected: 1, assigned: 2, submitted: 3, approved: 4 };
+  const items = [...d.items].sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
+  const working = items.filter(a => a.status === 'in_work').length;
+  const sent = items.filter(a => ['submitted', 'approved'].includes(a.status)).length;
+  return (d.has_today ? `<p class="mut small" style="margin:0 0 14px">Город: ${esc(d.city)}. В работе ${working}, отправлено ${sent}.</p>` : picker) + items.map(bizCard).join('');
 }
 async function wHistory() {
   const d = await api('base.history');
@@ -442,8 +548,10 @@ pages.me = async () => {
       <div class="row"><div class="grow mut">Баланс</div><b>${money(u.balance)}</b></div>
       <div class="row"><div class="grow mut">Заработано всего</div><b>${money(u.earned_total)}</b></div>
       <div class="row"><div class="grow mut">HustlifyCoin</div><b>${u.coins}</b></div>
-      <div class="row"><div class="grow mut">Процент с продаж</div><b>${m.percent}%${m.boost ? ` (с бустом +${m.boost})` : ''}</b></div>
-      <div class="row"><div class="grow mut">Принято работ</div><b>${m.approved_total}</b></div>
+      ${u.track === 'promoter'
+        ? `<div class="row"><div class="grow mut">Тариф</div><b>${u.plan === 'pro' ? 'Pro' : 'Работник'}</b></div>`
+        : `<div class="row"><div class="grow mut">Процент с продаж</div><b>${m.percent}%${m.boost ? ` (с бустом +${m.boost})` : ''}</b></div>
+           <div class="row"><div class="grow mut">Принято работ</div><b>${m.approved_total}</b></div>`}
     </div>
     <div class="list" style="margin-top:16px">
       ${u.role === 'admin' ? `<button class="row" data-act="adminOpen">${I.shield}<div class="grow t">Панель администратора</div>${I.chev}</button>` : ''}
@@ -473,11 +581,24 @@ async function aStats() {
     <button class="btn" data-act="saleSubmit">Начислить процент</button>`;
 }
 async function aQueue() {
-  const d = await api('admin.queue');
-  $('#abody').innerHTML = d.items.length ? d.items.map(a => `<div class="biz"><h3>${esc(a.business?.name)}</h3>
+  const [d, v, p] = await Promise.all([api('admin.queue'), api('admin.vqueue'), api('admin.plans')]);
+  const sec = (t, a) => a.length ? `<h2 class="h2">${t}</h2>` + a.join('') : '';
+  const works = d.items.map(a => `<div class="biz"><h3>${esc(a.business?.name)}</h3>
     <div class="meta">${esc(a.user?.full_name)}, @${esc(a.user?.login)}</div>
     <div class="note">${esc(a.proof_text)}</div>${a.proof_url ? `<img class="proof" src="${esc(a.proof_url)}" alt="Доказательство">` : ''}
-    <div class="foot"><button class="btn ghost sm" data-act="reject" data-id="${a.id}">Отклонить</button><button class="btn sm" data-act="approve" data-id="${a.id}">Принять</button></div></div>`).join('')
+    <div class="foot"><button class="btn ghost sm" data-act="reject" data-id="${a.id}">Отклонить</button><button class="btn sm" data-act="approve" data-id="${a.id}">Принять</button></div></div>`);
+  const vids = v.items.map(s => `<div class="biz"><h3>${esc(s.task?.title)}</h3>
+    <div class="meta">${esc(s.user?.full_name)}, @${esc(s.user?.login)}${s.task?.kind === 'test' ? ' · тестовое' : ''}</div>
+    ${s.note ? `<div class="note">${esc(s.note)}</div>` : ''}
+    ${safeUrl(s.video_url) ? linkEl(s.video_url, 'Открыть видео', 'phone') : ''}
+    <div class="foot"><button class="btn ghost sm" data-act="vreject" data-id="${s.id}">Отклонить</button><button class="btn sm" data-act="vapprove" data-id="${s.id}">Принять и выплатить</button></div></div>`);
+  const plans = p.items.map(r => `<div class="biz"><h3>Заявка на Pro</h3>
+    <div class="meta">${esc(r.user?.full_name)}, @${esc(r.user?.login)}</div>
+    ${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}
+    ${safeUrl(r.portfolio_url) ? linkEl(r.portfolio_url, 'Открыть пример монтажа', 'phone') : ''}
+    <div class="foot"><button class="btn ghost sm" data-act="planReject" data-id="${r.id}">Отклонить</button><button class="btn sm" data-act="planApprove" data-id="${r.id}">Перевести на Pro</button></div></div>`);
+  $('#abody').innerHTML = works.length || vids.length || plans.length
+    ? sec('Работы по базе', works) + sec('Видео', vids) + sec('Переход на Pro', plans)
     : `<div class="empty"><b>Очередь пуста</b>Новые работы появятся здесь.</div>`;
 }
 function aAi() {
@@ -588,11 +709,35 @@ const A = {
     toast(`${r.worker}: +${money(r.payout)} (${r.percent}%)`); aStats();
   },
   aiSend: d => aiSend(d.t),
+  openUrl: d => { const u = safeUrl(d.u); if (!u) return; if (tg?.openLink) tg.openLink(u); else window.open(u, '_blank'); },
+  bizSheet, taskSheet, planSheet,
+  testVideo: () => open('testvideo', testVideo),
+  async take(d) { await api('base.take', { assignment_id: Number(d.id) }); toast('Взято в работу'); closeSheet(); pages.work(); },
+  async roleSet(d) {
+    const msg = `Выбрать роль «${d.k === 'seller' ? 'продаю' : 'продвигаю проект'}»? Потом её сможет изменить только администратор.`;
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
+    if (!ok) return;
+    await api('role.set', { track: d.k });
+    loading(); await enter();
+  },
+  async promoSend(d) {
+    await api('promo.submit', { task_id: Number(d.id), url: val('v_url'), note: val('v_note') });
+    toast('Отправлено на проверку'); closeSheet();
+    cur?.key === 'testvideo' ? testVideo() : pages.work();
+  },
+  async planSend() { await api('plan.request', { url: val('pl_url'), note: val('pl_note') }); toast('Заявка отправлена'); closeSheet(); pages.work(); },
+  async vapprove(d) { await api('admin.vreview', { id: Number(d.id), approve: true }); toast('Принято, выплата начислена'); aQueue(); },
+  vreject(d) { sheet(`<h3>Что доработать</h3><label class="field"><textarea id="r_note" placeholder="Например: плохой звук, слабая подача"></textarea></label><button class="btn" data-act="vrejectSend" data-id="${d.id}">Отклонить</button>`); },
+  async vrejectSend(d) { await api('admin.vreview', { id: Number(d.id), approve: false, note: val('r_note') }); closeSheet(); toast('Отклонено'); aQueue(); },
+  async planApprove(d) { await api('admin.plan_decide', { id: Number(d.id), approve: true }); toast('Переведён на Pro'); aQueue(); },
+  planReject(d) { sheet(`<h3>Причина отказа</h3><label class="field"><textarea id="r_note"></textarea></label><button class="btn" data-act="planRejectSend" data-id="${d.id}">Отклонить</button>`); },
+  async planRejectSend(d) { await api('admin.plan_decide', { id: Number(d.id), approve: false, note: val('r_note') }); closeSheet(); toast('Отклонено'); aQueue(); },
 };
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
   if (!el || el.disabled) return;
+  if (el.tagName === 'A') e.preventDefault();
   const fn = A[el.dataset.act]; if (!fn) return;
   haptic();
   Promise.resolve(fn(el.dataset, el)).catch(err => toast(err.message));
@@ -606,7 +751,7 @@ document.addEventListener('keydown', e => {
 (async function boot() {
   try { tg?.ready(); tg?.expand(); tg?.disableVerticalSwipes?.(); } catch {}
   applyTheme(); tg?.onEvent?.('themeChanged', applyTheme);
-  if (!tg?.initData) {
+  if (!tg?.initData && location.hostname !== 'localhost' && !location.hostname.endsWith('.run.app')) {
     view(`<div class="screen no-tab"><div class="brand">Hustlify</div><div class="empty"><b>Откройте в Telegram</b>Приложение работает только внутри бота.</div></div>`, { back: false });
     return;
   }

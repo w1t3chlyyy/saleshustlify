@@ -19,6 +19,8 @@ create table if not exists users (
   tags text[] not null default '{}',
   training_done boolean not null default false,
   city text,
+  track text check (track in ('seller','promoter')),
+  plan text not null default 'worker' check (plan in ('worker','pro')),
   percent_boost numeric(4,2) not null default 0,
   boost_until timestamptz,
   is_blocked boolean not null default false,
@@ -34,6 +36,7 @@ create table if not exists lessons (
   position int not null default 0,
   title text not null,
   body text not null default '',
+  audience text not null default 'all' check (audience in ('all','seller','promoter')),
   is_published boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -90,6 +93,7 @@ create table if not exists businesses (
   category text,
   address text,
   phone text,
+  contacts jsonb not null default '{}',
   info text,
   lat double precision,
   lon double precision,
@@ -105,12 +109,13 @@ create table if not exists assignments (
   user_id uuid not null references users(id) on delete cascade,
   business_id bigint not null references businesses(id) on delete cascade,
   day date not null,
-  status text not null default 'assigned' check (status in ('assigned','submitted','approved','rejected')),
+  status text not null default 'assigned' check (status in ('assigned','in_work','submitted','approved','rejected')),
   proof_text text,
   proof_path text,
   reviewer_note text,
   coins_awarded int not null default 0,
   created_at timestamptz not null default now(),
+  taken_at timestamptz,
   submitted_at timestamptz,
   reviewed_at timestamptz,
   unique (user_id, business_id)
@@ -128,6 +133,46 @@ create table if not exists sales (
   payout numeric(12,2) not null,
   note text,
   created_at timestamptz not null default now()
+);
+
+-- ───────── Продвигающие: видео и тариф Pro
+create table if not exists video_tasks (
+  id bigserial primary key,
+  title text not null,
+  brief text not null default '',
+  kind text not null default 'work' check (kind in ('test','work')),
+  min_plan text not null default 'worker' check (min_plan in ('worker','pro')),
+  reward_money numeric(12,2) not null default 0,
+  reward_coins int not null default 0,
+  deadline timestamptz,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists video_submissions (
+  id bigserial primary key,
+  task_id bigint not null references video_tasks(id) on delete cascade,
+  user_id uuid not null references users(id) on delete cascade,
+  video_url text not null,
+  note text,
+  status text not null default 'submitted' check (status in ('submitted','approved','rejected')),
+  reviewer_note text,
+  money_awarded numeric(12,2) not null default 0,
+  coins_awarded int not null default 0,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz,
+  unique (task_id, user_id)
+);
+
+create table if not exists plan_requests (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  portfolio_url text not null,
+  note text,
+  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  admin_note text,
+  created_at timestamptz not null default now(),
+  decided_at timestamptz
 );
 
 -- ───────── Коины и магазин
@@ -149,6 +194,17 @@ create table if not exists shop_items (
   stock int,
   is_active boolean not null default true,
   position int not null default 0
+);
+
+create table if not exists promo_codes (
+  id bigserial primary key,
+  item_id bigint not null references shop_items(id) on delete cascade,
+  code text not null,
+  is_used boolean not null default false,
+  used_by uuid references users(id) on delete set null,
+  used_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (item_id, code)
 );
 
 create table if not exists purchases (
@@ -187,6 +243,17 @@ returns void language sql security definer as $$
   update users set balance = balance + p_amount, earned_total = earned_total + greatest(p_amount, 0) where id = p_user;
 $$;
 
+create or replace function claim_promo(p_item bigint, p_user uuid)
+returns text language plpgsql security definer as $$
+declare c text;
+begin
+  update promo_codes set is_used = true, used_by = p_user, used_at = now()
+  where id = (
+    select id from promo_codes where item_id = p_item and not is_used order by id limit 1 for update skip locked
+  ) returning code into c;
+  return c;
+end $$;
+
 -- Выдаёт пользователю p_n бизнесов из города, которые не заняты другими
 create or replace function claim_businesses(p_user uuid, p_city text, p_day date, p_n int)
 returns setof assignments language plpgsql security definer as $$
@@ -199,7 +266,7 @@ begin
         select 1 from assignments a
         where a.business_id = b.id
           and (a.user_id = p_user
-               or a.status in ('submitted','approved')
+               or a.status in ('in_work','submitted','approved')
                or (a.status = 'assigned' and a.day >= p_day))
       )
     order by random() limit p_n
@@ -220,8 +287,12 @@ alter table leads enable row level security;
 alter table businesses enable row level security;
 alter table assignments enable row level security;
 alter table sales enable row level security;
+alter table video_tasks enable row level security;
+alter table video_submissions enable row level security;
+alter table plan_requests enable row level security;
 alter table coin_ledger enable row level security;
 alter table shop_items enable row level security;
+alter table promo_codes enable row level security;
 alter table purchases enable row level security;
 alter table settings enable row level security;
 alter table broadcasts enable row level security;

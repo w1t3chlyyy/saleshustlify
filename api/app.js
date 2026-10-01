@@ -9,13 +9,30 @@ const { chatWithAdminAgent, stats, PRODUCTS } = require('../lib/admin');
 const pub = u => ({
   id: u.id, login: u.login, full_name: u.full_name, role: u.role, position: u.position,
   coins: u.coins, balance: Number(u.balance), earned_total: Number(u.earned_total),
-  training_done: u.training_done, city: u.city, tags: u.tags,
+  training_done: u.training_done, city: u.city, tags: u.tags, track: u.track, plan: u.plan,
 });
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: process.env.TZ_NAME || 'Europe/Moscow' });
 const need = (cond, code, msg) => { if (!cond) throw new Http(code, msg); };
 // Юзернейм наставника: только допустимые символы Telegram, без @
 const mentorUsername = v => { const u = String(v || '').trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//, ''); return /^[A-Za-z0-9_]{4,32}$/.test(u) ? u : ''; };
 const requireTrained = u => need(u.training_done || u.role === 'admin', 403, 'Сначала пройдите обучение и практику');
+const requireSeller = u => need(u.track === 'seller' || u.role === 'admin', 403, 'Раздел для продающих');
+const requirePromoter = u => need(u.track === 'promoter' || u.role === 'admin', 403, 'Раздел для продвигающих');
+
+async function notifyAdmins(text) {
+  const { data } = await db.from('users').select('tg_id').eq('role', 'admin').not('tg_id', 'is', null);
+  for (const a of data || []) await notify(a.tg_id, text);
+}
+
+// Ссылки на карты: по координатам, а если их нет, поиском по названию и городу
+const mapLinks = b => {
+  const q = encodeURIComponent([b.name, b.city].filter(Boolean).join(' '));
+  const has = b.lat != null && b.lon != null;
+  return {
+    yandex: has ? `https://yandex.ru/maps/?ll=${b.lon},${b.lat}&z=17&pt=${b.lon},${b.lat},pm2rdm` : `https://yandex.ru/maps/?text=${q}`,
+    gis: has ? `https://2gis.ru/search/${encodeURIComponent(b.name)}?m=${b.lon},${b.lat}/17` : `https://2gis.ru/search/${q}`,
+  };
+};
 
 async function percentFor(u) {
   const since = new Date(Date.now() - 30 * 864e5).toISOString();
@@ -36,9 +53,22 @@ async function claim(userId, city, day, n) {
 }
 
 const assignmentView = a => ({
-  id: a.id, status: a.status, reviewer_note: a.reviewer_note, proof_text: a.proof_text, day: a.day,
-  business: a.business ? { name: a.business.name, category: a.business.category, address: a.business.address, phone: a.business.phone, info: a.business.info } : null,
+  id: a.id, status: a.status, reviewer_note: a.reviewer_note, proof_text: a.proof_text, day: a.day, taken_at: a.taken_at,
+  business: a.business ? {
+    name: a.business.name, category: a.business.category, address: a.business.address, phone: a.business.phone,
+    info: a.business.info, contacts: a.business.contacts || {}, maps: mapLinks(a.business),
+  } : null,
 });
+
+// Множители Pro и оплата за видео-задание
+async function multipliers(user) {
+  if (user.plan !== 'pro') return { m: 1, c: 1 };
+  return {
+    m: Number(await setting('pro_money_multiplier', 1.5)) || 1,
+    c: Number(await setting('pro_coins_multiplier', 2)) || 1,
+  };
+}
+const rewardOf = (t, k) => ({ money: Math.round(Number(t.reward_money) * k.m * 100) / 100, coins: Math.round(t.reward_coins * k.c) });
 
 // Каталог и кейсы лежат в одной таблице, различаются колонкой section ('catalog' | 'case')
 async function loadKnowledge() {
@@ -52,7 +82,9 @@ async function loadKnowledge() {
 }
 
 async function lessonsFor(user) {
-  const { data: lessons } = await db.from('lessons').select('id,position,title').eq('is_published', true).order('position').order('id');
+  const track = user.track || 'seller';
+  const { data: lessons } = await db.from('lessons').select('id,position,title')
+    .eq('is_published', true).in('audience', ['all', track]).order('position').order('id');
   const { data: prog } = await db.from('lesson_progress').select('*').eq('user_id', user.id);
   const map = Object.fromEntries((prog || []).map(p => [p.lesson_id, p]));
   let prevPassed = true;
@@ -140,8 +172,10 @@ const H = {
 
   // ── обучение
   async 'learn.lessons'({ user }) {
+    need(user.track || user.role === 'admin', 409, 'Сначала выберите роль');
     const items = await lessonsFor(user);
-    return { items, all_passed: items.length > 0 && items.every(i => i.passed), training_done: user.training_done, lesson_reward: Number(await setting('lesson_reward_coins', 3)) || 0 };
+    const allPassed = user.track === 'promoter' ? items.every(i => i.passed) : items.length > 0 && items.every(i => i.passed);
+    return { items, all_passed: allPassed, training_done: user.training_done, lesson_reward: Number(await setting('lesson_reward_coins', 3)) || 0 };
   },
 
   async 'learn.lesson'({ user }, { id }) {
@@ -196,6 +230,7 @@ const H = {
 
   // ── практика с «вредным клиентом»
   async 'practice.start'({ user }) {
+    need(user.track === 'seller' || user.role === 'admin', 403, 'Практика с клиентом только для продающих');
     const items = await lessonsFor(user);
     need(user.training_done || (items.length && items.every(i => i.passed)), 403, 'Сначала пройдите все разделы');
     const k = await loadKnowledge();
@@ -240,13 +275,16 @@ const H = {
 
   // ── работа по базе
   async 'base.today'({ user }, { city }) {
+    requireSeller(user);
     requireTrained(user);
     const day = today();
     const limit = await setting('daily_batch', 15);
-    const load = async () => (await db.from('assignments').select('*, business:businesses(*)').eq('user_id', user.id).eq('day', day).order('id')).data || [];
+    // Сегодняшняя подборка + всё, что взято в работу в любой день
+    const load = async () => (await db.from('assignments').select('*, business:businesses(*)')
+      .eq('user_id', user.id).or(`day.eq.${day},status.eq.in_work`).order('id')).data || [];
     let list = await load();
     const c = String(city || '').trim().slice(0, 60);
-    if (!list.length && c) {
+    if (!list.some(a => a.day === day) && c) {
       let got = await claim(user.id, c, day, limit);
       if (got < limit) {
         try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
@@ -254,12 +292,25 @@ const H = {
       }
       await db.from('users').update({ city: c }).eq('id', user.id);
       list = await load();
-      need(list.length, 404, 'В этом городе пока нет подходящих бизнесов без сайта. Попробуйте другой город');
+      need(list.some(a => a.day === day), 404, 'В этом городе пока нет подходящих бизнесов без сайта. Попробуйте другой город');
     }
-    return { items: list.map(assignmentView), limit, city: user.city || '' };
+    return { items: list.map(assignmentView), limit, city: user.city || '', has_today: list.some(a => a.day === day) };
+  },
+
+  async 'base.take'({ user }, { assignment_id }) {
+    requireSeller(user);
+    const { data: a } = await db.from('assignments').select('id,status').eq('id', assignment_id).eq('user_id', user.id).maybeSingle();
+    need(a, 404, 'Задание не найдено');
+    need(a.status === 'assigned', 409, 'Уже взято в работу');
+    const max = await setting('max_in_work', 30);
+    const { count } = await db.from('assignments').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'in_work');
+    need((count || 0) < max, 409, `В работе одновременно не больше ${max} бизнесов. Сначала отправьте результаты по текущим`);
+    await db.from('assignments').update({ status: 'in_work', taken_at: new Date().toISOString() }).eq('id', a.id).eq('status', 'assigned');
+    return { ok: true };
   },
 
   async 'base.history'({ user }) {
+    requireSeller(user);
     requireTrained(user);
     const { data } = await db.from('assignments').select('*, business:businesses(*)').eq('user_id', user.id)
       .in('status', ['submitted', 'approved', 'rejected']).order('id', { ascending: false }).limit(40);
@@ -267,10 +318,11 @@ const H = {
   },
 
   async 'base.submit'({ user }, { assignment_id, text, image }) {
+    requireSeller(user);
     requireTrained(user);
     const { data: a } = await db.from('assignments').select('*').eq('id', assignment_id).eq('user_id', user.id).maybeSingle();
     need(a, 404, 'Задание не найдено');
-    need(['assigned', 'rejected'].includes(a.status), 409, 'Уже отправлено на проверку');
+    need(['in_work', 'rejected'].includes(a.status), 409, a.status === 'assigned' ? 'Сначала возьмите бизнес в работу' : 'Уже отправлено на проверку');
     const t = String(text || '').trim();
     need(t.length >= 20, 400, 'Опишите результат подробнее (от 20 символов)');
     let path = a.proof_path;
@@ -289,12 +341,14 @@ const H = {
 
   // ── свои клиенты
   async 'leads.list'({ user }) {
+    requireSeller(user);
     requireTrained(user);
     const { data } = await db.from('leads').select('*').eq('user_id', user.id).order('id', { ascending: false }).limit(100);
     return { items: data || [] };
   },
 
   async 'leads.save'({ user }, p) {
+    requireSeller(user);
     requireTrained(user);
     const name = String(p.name || '').trim();
     need(name, 400, 'Укажите название или имя клиента');
@@ -366,6 +420,83 @@ const H = {
     return { ok: true, result, coins: spend.data };
   },
 
+  // ── роль и тариф
+  async 'role.set'({ user }, { track }) {
+    need(['seller', 'promoter'].includes(track), 400, 'Выберите роль');
+    need(!user.track, 409, 'Роль уже выбрана. Изменить её может администратор');
+    await db.from('users').update({ track, position: track === 'promoter' ? 'Промоутер' : 'Стажёр' }).eq('id', user.id);
+    return { ok: true, track };
+  },
+
+  async 'plan.request'({ user }, { url, note }) {
+    need(user.track === 'promoter', 403, 'Только для продвигающих');
+    requireTrained(user);
+    need(user.plan !== 'pro', 409, 'У вас уже тариф Pro');
+    const link = String(url || '').trim();
+    need(/^https?:\/\/\S{4,500}$/i.test(link), 400, 'Вставьте ссылку на пример вашего монтажа (https://…)');
+    const { data: pend } = await db.from('plan_requests').select('id').eq('user_id', user.id).eq('status', 'pending').limit(1);
+    need(!pend?.length, 409, 'Заявка уже на рассмотрении');
+    await db.from('plan_requests').insert({ user_id: user.id, portfolio_url: link, note: String(note || '').slice(0, 1000) || null });
+    await notifyAdmins(`Заявка на Pro: ${user.full_name} (@${user.login})`);
+    return { ok: true };
+  },
+
+  // ── продвигающие: видео
+  async 'promo.test'({ user }) {
+    requirePromoter(user);
+    const items = await lessonsFor(user);
+    need(user.training_done || items.every(i => i.passed), 403, 'Сначала пройдите все разделы');
+    const { data: task } = await db.from('video_tasks').select('*').eq('kind', 'test').eq('is_active', true).order('id').limit(1).maybeSingle();
+    need(task, 404, 'Тестовое задание пока не опубликовано');
+    const { data: sub } = await db.from('video_submissions').select('status,reviewer_note,video_url').eq('task_id', task.id).eq('user_id', user.id).maybeSingle();
+    return { task: { id: task.id, title: task.title, brief: task.brief, deadline: task.deadline }, submission: sub || null, training_done: user.training_done };
+  },
+
+  async 'promo.tasks'({ user }) {
+    requirePromoter(user);
+    requireTrained(user);
+    const [{ data: tasks }, { data: subs }, { data: pend }, k] = await Promise.all([
+      db.from('video_tasks').select('*').eq('kind', 'work').eq('is_active', true).order('id', { ascending: false }).limit(50),
+      db.from('video_submissions').select('task_id,status,reviewer_note,video_url').eq('user_id', user.id),
+      db.from('plan_requests').select('id').eq('user_id', user.id).eq('status', 'pending').limit(1),
+      multipliers(user),
+    ]);
+    const mine = Object.fromEntries((subs || []).map(s => [s.task_id, s]));
+    return {
+      plan: user.plan, plan_pending: !!pend?.length,
+      items: (tasks || []).map(t => {
+        const r = rewardOf(t, k);
+        return {
+          id: t.id, title: t.title, brief: t.brief, deadline: t.deadline, min_plan: t.min_plan,
+          locked: t.min_plan === 'pro' && user.plan !== 'pro',
+          reward_money: r.money, reward_coins: r.coins, sub: mine[t.id] || null,
+        };
+      }),
+    };
+  },
+
+  async 'promo.submit'({ user }, { task_id, url, note }) {
+    requirePromoter(user);
+    const { data: task } = await db.from('video_tasks').select('*').eq('id', task_id).eq('is_active', true).maybeSingle();
+    need(task, 404, 'Задание не найдено');
+    if (task.kind !== 'test') {
+      requireTrained(user);
+      need(task.min_plan === 'worker' || user.plan === 'pro', 403, 'Это задание только для тарифа Pro');
+    }
+    need(!task.deadline || new Date(task.deadline) > new Date(), 409, 'Срок задания истёк');
+    const link = String(url || '').trim();
+    need(/^https?:\/\/\S{4,500}$/i.test(link), 400, 'Вставьте ссылку на видео (https://…)');
+    const { data: old } = await db.from('video_submissions').select('status').eq('task_id', task.id).eq('user_id', user.id).maybeSingle();
+    need(!old || old.status === 'rejected', 409, old?.status === 'approved' ? 'Задание уже принято' : 'Уже отправлено на проверку');
+    const { error } = await db.from('video_submissions').upsert({
+      task_id: task.id, user_id: user.id, video_url: link, note: String(note || '').slice(0, 1000) || null,
+      status: 'submitted', reviewer_note: null, reviewed_at: null, created_at: new Date().toISOString(),
+    }, { onConflict: 'task_id,user_id' });
+    if (error) throw error;
+    await notifyAdmins(`Новое видео на проверке: ${user.full_name} (@${user.login}), «${task.title}»`);
+    return { ok: true };
+  },
+
   // ── админка
   async 'admin.stats'() {
     const k = await loadKnowledge();
@@ -423,6 +554,57 @@ const H = {
     return { ok: true, worker: worker.full_name, percent, payout };
   },
 
+  async 'admin.vqueue'() {
+    const { data } = await db.from('video_submissions').select('*, task:video_tasks(title,kind), user:users(full_name,login)')
+      .eq('status', 'submitted').order('created_at').limit(30);
+    return { items: data || [] };
+  },
+
+  async 'admin.vreview'({ user: admin }, { id, approve, note }) {
+    const { data: s } = await db.from('video_submissions').select('*, task:video_tasks(*), user:users(*)').eq('id', id).eq('status', 'submitted').maybeSingle();
+    need(s, 404, 'Видео не найдено или уже проверено');
+    let money = 0, coins = 0, isFirstTest = false;
+    if (approve) {
+      const r = rewardOf(s.task, await multipliers(s.user));
+      money = r.money; coins = r.coins;
+      if (s.task.kind === 'test' && !s.user.training_done) {
+        isFirstTest = true;
+        coins += Number(await setting('training_reward_coins', 20)) || 0;
+      }
+    }
+    // Сначала «занимаем» заявку, чтобы выплата не прошла дважды
+    const upd = await db.from('video_submissions').update({
+      status: approve ? 'approved' : 'rejected', reviewer_note: String(note || '').slice(0, 500) || null,
+      money_awarded: money, coins_awarded: coins, reviewed_at: new Date().toISOString(),
+    }).eq('id', id).eq('status', 'submitted').select();
+    need(upd.data?.length, 409, 'Уже проверено');
+    if (approve) {
+      if (money > 0) await db.rpc('add_money', { p_user: s.user_id, p_amount: money });
+      if (coins > 0) await db.rpc('add_coins', { p_user: s.user_id, p_delta: coins, p_reason: 'Видео принято: ' + s.task.title });
+      if (isFirstTest) await db.from('users').update({ training_done: true }).eq('id', s.user_id);
+    }
+    await db.from('audit_log').insert({ admin_id: admin.id, action: 'video_review', payload: { id, approve, money, coins } });
+    await notify(s.user.tg_id, approve
+      ? `Видео «${s.task.title}» принято${money ? `: +${money} ₽` : ''}${coins ? `, +${coins} HustlifyCoin` : ''}`
+      : `Видео «${s.task.title}» нужно доработать${note ? ': ' + note : ''}`);
+    return { ok: true };
+  },
+
+  async 'admin.plans'() {
+    const { data } = await db.from('plan_requests').select('*, user:users(full_name,login)').eq('status', 'pending').order('id').limit(30);
+    return { items: data || [] };
+  },
+
+  async 'admin.plan_decide'({ user: admin }, { id, approve, note }) {
+    const { data: r } = await db.from('plan_requests').select('*, user:users(id,tg_id)').eq('id', id).eq('status', 'pending').maybeSingle();
+    need(r, 404, 'Заявка не найдена или уже рассмотрена');
+    await db.from('plan_requests').update({ status: approve ? 'approved' : 'rejected', admin_note: String(note || '').slice(0, 500) || null, decided_at: new Date().toISOString() }).eq('id', id);
+    if (approve) await db.from('users').update({ plan: 'pro', position: 'Промоутер Pro' }).eq('id', r.user_id);
+    await db.from('audit_log').insert({ admin_id: admin.id, action: 'plan_decide', payload: { id, approve } });
+    await notify(r.user.tg_id, approve ? 'Вы переведены на тариф Pro. Теперь доступны Pro-задания и повышенная оплата' : `Заявка на Pro отклонена${note ? ': ' + note : ''}`);
+    return { ok: true };
+  },
+
   async 'admin.chat'({ user: admin }, { messages }) {
     return chatWithAdminAgent(admin, messages);
   },
@@ -448,7 +630,7 @@ module.exports = async (req, res) => {
       need(Number(user.tg_id) === tgUser.id, 401, 'Нужно войти');
       need(!action.startsWith('admin.') || user.role === 'admin', 403, 'Нет доступа');
       // Без пройденного обучения доступны только профиль, обучение, тесты и практика
-      if (!/^(me$|learn\.|quiz\.|practice\.)/.test(action)) requireTrained(user);
+      if (!/^(me$|role\.|learn\.|quiz\.|practice\.|promo\.test$|promo\.submit$)/.test(action)) requireTrained(user);
       ctx.user = user;
     }
     res.json(await handler(ctx, p));
