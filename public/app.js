@@ -423,7 +423,9 @@ async function aStats() {
   $('#abody').innerHTML = `<div class="grid2">
     <div class="card stat"><b>${s.users}</b><span>Сотрудников</span></div><div class="card stat"><b>${s.trained}</b><span>Прошли обучение</span></div>
     <div class="card stat"><b>${s.pending_reviews}</b><span>Ждут проверки</span></div><div class="card stat"><b>${s.approved_businesses}</b><span>Принято работ</span></div>
-    <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div></div>
+    <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div>
+    <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит Qwen</span></div>
+    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога передаётся</span></div></div></div>
     <h2 class="h2">Записать продажу</h2>
     <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none"></label>
     <label class="field"><span>ID бизнеса (вместо логина)</span><input id="s_biz" inputmode="numeric"></label>
