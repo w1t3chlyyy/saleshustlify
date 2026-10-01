@@ -370,30 +370,19 @@ async function openLesson(id) {
 }
 
 async function quizStart(id) {
-  if (S.user?.track === 'promoter') {
-    S.quiz = {
-      id: null,
-      pre: true,
-      lesson: id,
-      i: 0,
-      ans: [],
-      qs: [
-        {
-          q: 'Сколько вам полных лет?',
-          options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'],
-        },
-        {
-          q: 'Умеете ли вы монтировать видео?',
-          sub: 'Здесь нет неверных ответов — от вашего выбора зависят следующие вопросы',
-          options: ['Да, умею монтировать', 'Нет, пока не умею'],
-        },
-      ],
-    };
-    return quizRender();
-  }
   loading('HustlifyAI составляет вопросы для вас…');
   try {
     const d = await api('quiz.start', { lesson_id: id });
+    if (d.need_intro) {
+      S.quiz = {
+        id: null, pre: true, lesson: id, i: 0, ans: [],
+        qs: [
+          { q: 'Сколько вам полных лет?', options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'] },
+          { q: 'Умеете ли вы монтировать видео?', sub: 'Здесь нет неверных ответов — от вашего выбора зависят следующие вопросы', options: ['Да, умею монтировать', 'Нет, пока не умею'] },
+        ],
+      };
+      return quizRender();
+    }
     S.quiz = { id: d.quiz_id, qs: d.questions, i: 0, ans: [], lesson: id };
     quizRender();
   } catch (e) { toast(e.message); backTo('learn', learnHome); }
