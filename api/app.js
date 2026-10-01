@@ -317,18 +317,33 @@ const H = {
   async 'shop.list'({ user }) {
     const { data: items } = await db.from('shop_items').select('id,title,description,price,kind,stock').eq('is_active', true).order('position');
     const { data: mine } = await db.from('purchases').select('id,title,price,result,created_at').eq('user_id', user.id).order('id', { ascending: false }).limit(20);
-    return { items: (items || []).filter(i => i.stock === null || i.stock > 0), purchases: mine || [], coins: user.coins };
+    const { data: free } = await db.from('promo_codes').select('item_id').eq('is_used', false).limit(5000);
+    const left = {};
+    (free || []).forEach(r => { left[r.item_id] = (left[r.item_id] || 0) + 1; });
+    const visible = (items || []).filter(i => i.kind === 'promo' ? (left[i.id] || 0) > 0 : (i.stock === null || i.stock > 0));
+    return { items: visible, purchases: mine || [], coins: user.coins };
   },
 
   async 'shop.buy'({ user }, { item_id }) {
     requireTrained(user);
     const { data: item } = await db.from('shop_items').select('*').eq('id', item_id).eq('is_active', true).maybeSingle();
     need(item, 404, 'Товар не найден');
-    need(item.stock === null || item.stock > 0, 409, 'Товар закончился');
+    need(item.kind === 'promo' || item.stock === null || item.stock > 0, 409, 'Товар закончился');
     need(user.coins >= item.price, 402, 'Не хватает коинов');
+    // Промокод берём из загруженных админом кодов; если не получилось списать коины, код возвращаем
+    let promo = null;
+    if (item.kind === 'promo') {
+      const c = await db.rpc('claim_promo', { p_item: item.id, p_user: user.id });
+      if (c.error) throw c.error;
+      need(c.data, 409, 'Промокоды закончились');
+      promo = c.data;
+    }
     const spend = await db.rpc('add_coins', { p_user: user.id, p_delta: -item.price, p_reason: 'Магазин: ' + item.title });
-    if (spend.error) throw new Http(402, 'Не хватает коинов');
-    if (item.stock !== null) {
+    if (spend.error) {
+      if (promo) await db.from('promo_codes').update({ is_used: false, used_by: null, used_at: null }).eq('item_id', item.id).eq('code', promo);
+      throw new Http(402, 'Не хватает коинов');
+    }
+    if (item.kind !== 'promo' && item.stock !== null) {
       const up = await db.from('shop_items').update({ stock: item.stock - 1 }).eq('id', item.id).eq('stock', item.stock).select();
       if (!up.data?.length) {
         await db.rpc('add_coins', { p_user: user.id, p_delta: item.price, p_reason: 'Возврат: товар закончился' });
@@ -337,7 +352,7 @@ const H = {
     }
     let result = {};
     if (item.kind === 'promo') {
-      result = { code: 'HUSTLE-' + Math.random().toString(36).slice(2, 8).toUpperCase(), discount_percent: item.payload?.discount_percent };
+      result = { code: promo, discount_percent: item.payload?.discount_percent };
     } else if (item.kind === 'boost') {
       const until = new Date(Date.now() + (item.payload?.days || 7) * 864e5).toISOString();
       await db.from('users').update({ percent_boost: item.payload?.percent || 0, boost_until: until }).eq('id', user.id);
