@@ -1,4 +1,4 @@
-const { db, setting, Http } = require('../lib/db');
+const { db, kb, setting, Http } = require('../lib/db');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
@@ -39,10 +39,11 @@ const assignmentView = a => ({
 });
 
 async function loadKnowledge() {
-  const [p, c] = await Promise.all([
-    db.from(PRODUCTS).select('*').limit(30),
-    db.from(CASES).select('*').limit(30),
+    const [p, c] = await Promise.all([
+    kb.from(PRODUCTS).select('*').limit(30),
+    kb.from(CASES).select('*').limit(30),
   ]);
+  if (p.error || c.error) console.error('knowledge base:', p.error?.message || c.error?.message);
   return { products: p.data || [], cases: c.data || [] };
 }
 
