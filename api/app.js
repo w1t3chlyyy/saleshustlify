@@ -39,14 +39,14 @@ const assignmentView = a => ({
 });
 
 async function loadKnowledge() {
-  const [p, c] = await Promise.all([
-    kb.from(PRODUCTS).select('*').limit(30),
-    kb.from(CASES).select('*').limit(30),
-  ]);
-  if (p.error || c.error) console.error('knowledge base:', p.error?.message || c.error?.message);
-  return { products: p.data || [], cases: c.data || [] };
+  const { data, error } = await kb.from(PRODUCTS).select('*').limit(300);
+  if (error) console.error('knowledge base:', error.message);
+  const rows = data || [];
+  return {
+    products: rows.filter(r => r.section !== 'case'),
+    cases: rows.filter(r => r.section === 'case'),
+  };
 }
-
 async function lessonsFor(user) {
   const { data: lessons } = await db.from('lessons').select('id,position,title').eq('is_published', true).order('position').order('id');
   const { data: prog } = await db.from('lesson_progress').select('*').eq('user_id', user.id);
