@@ -1,4 +1,5 @@
 const { db, kb, setting, Http, parseLessonRow, resolveLessonBody } = require('../lib/db');
+const crypto = require('crypto');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
@@ -119,7 +120,48 @@ async function lessonsFor(user) {
   });
   return items;
 }
+const QUIZ_SIZE = 5;    // вопросов в одной попытке
+const BANK_SIZE = 15;   // вопросов в банке на раздел
+const qKey = q => String(q.q).trim().toLowerCase().replace(/\s+/g, ' ');
+const shuffle = a => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const reshuffle = q => { const o = shuffle([0, 1, 2, 3]); return { ...q, options: o.map(i => q.options[i]), correct: o.indexOf(q.correct) }; };
 
+// Анкета: показывается только в первом разделе продвигающих
+const INTRO = [
+  { q: 'Сколько вам полных лет?', options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'], correct: 1, any: true, explain: 'Участие в команде доступно с 16 лет.' },
+  { q: 'Умеете ли вы монтировать видео?', options: ['Да, умею монтировать', 'Нет, пока не умею'], correct: 0, any: true, explain: 'Здесь нет неверных ответов — вопрос помогает подобрать подходящие вопросы.' },
+];
+const EDIT_SURVEY = [
+  { q: 'В каких программах вы монтируете видео?', options: ['CapCut / VN', 'Adobe Premiere Pro / After Effects', 'DaVinci Resolve / Final Cut Pro', 'Другие видеоредакторы'], correct: 0, any: true, explain: 'Ответ сохранён в вашей анкете.' },
+  { q: 'Какой у вас опыт в монтаже коротких роликов (Reels, Shorts, TikTok)?', options: ['Меньше 6 месяцев', 'От 6 месяцев до 1 года', 'От 1 до 2 лет', 'Более 2 лет'], correct: 0, any: true, explain: 'Ответ сохранён в вашей анкете.' },
+];
+
+// Банк вопросов раздела: генерируется один раз, каждому выдаётся выборка без повторов
+async function quizQuestions(user, lesson, variant, kb, opts) {
+  const hash = crypto.createHash('md5').update(lesson.title + '\n' + String(lesson.body || '')).digest('hex');
+  const { data: row } = await db.from('quiz_bank').select('*').eq('lesson_id', lesson.id).eq('variant', variant).maybeSingle();
+  let bank = row && row.body_hash === hash ? (row.questions || []) : [];
+  const save = () => db.from('quiz_bank').upsert({ lesson_id: lesson.id, variant, body_hash: hash, questions: bank }, { onConflict: 'lesson_id,variant' });
+
+  if (!bank.length) { bank = await qwen.genQuiz(lesson, [], kb, { ...opts, count: BANK_SIZE }); await save(); }
+
+  const { data: prev } = await db.from('quizzes').select('questions').eq('user_id', user.id).eq('lesson_id', lesson.id);
+  const seen = new Set((prev || []).flatMap(p => (p.questions || []).filter(q => !q.any).map(q => qKey(q))));
+  let fresh = bank.filter(q => !seen.has(qKey(q)));
+
+  // Сотрудник «выбрал» банк: дозаказываем ещё 15 новых вопросов
+  if (fresh.length < QUIZ_SIZE) {
+    try {
+      const more = await qwen.genQuiz(lesson, [], kb, { ...opts, count: BANK_SIZE, avoid: bank.map(q => q.q) });
+      const known = new Set(bank.map(q => qKey(q)));
+      bank = [...bank, ...more.filter(q => !known.has(qKey(q)))].slice(-60);
+      await save();
+      fresh = bank.filter(q => !seen.has(qKey(q)));
+    } catch (e) { console.error('quiz bank top-up:', e.message); }
+  }
+  const pool = fresh.length >= QUIZ_SIZE ? fresh : [...fresh, ...bank.filter(q => seen.has(qKey(q)))];
+  return shuffle(pool).slice(0, QUIZ_SIZE).map(reshuffle);
+}
 // ───────── handlers
 const H = {
   // ── авторизация
@@ -218,67 +260,35 @@ const H = {
     return { lesson: { ...data, body: resolvedBody }, passed: it.passed };
   },
 
-  async 'quiz.start'({ user }, { lesson_id, can_edit }) {
-    const items = await lessonsFor(user);
-    const it = items.find(i => i.id === Number(lesson_id));
-    need(it && it.unlocked, 403, 'Раздел недоступен');
-    const isPromoter = user.track === 'promoter';
-    let { data: open } = await db.from('quizzes').select('*').eq('user_id', user.id).eq('lesson_id', lesson_id).is('finished_at', null).order('created_at', { ascending: false }).limit(1);
-    let quiz = open?.[0];
-    // Для продвигающих пересоздаём незавершённый тест, если выбор «умею/не умею монтировать» изменился
-    if (quiz && isPromoter && can_edit !== undefined) {
-      await db.from('quizzes').delete().eq('id', quiz.id);
-      quiz = null;
+async 'quiz.start'({ user }, { lesson_id, can_edit }) {
+  const items = await lessonsFor(user);
+  const it = items.find(i => i.id === Number(lesson_id));
+  need(it && it.unlocked, 403, 'Раздел недоступен');
+  const isPromoter = user.track === 'promoter';
+  const tags = user.tags || [];
+  // Анкета только в первом разделе и только пока человек её не заполнил
+  const needIntro = isPromoter && items[0]?.id === it.id && !tags.some(t => /^монтаж:/.test(t));
+  if (needIntro && can_edit === undefined) return { need_intro: true };
+
+  const { data: open } = await db.from('quizzes').select('*').eq('user_id', user.id).eq('lesson_id', lesson_id).is('finished_at', null).order('created_at', { ascending: false }).limit(1);
+  let quiz = open?.[0];
+  if (quiz && needIntro) { await db.from('quizzes').delete().eq('id', quiz.id); quiz = null; }
+  if (!quiz) {
+    const { data: lesson } = await db.from('lessons').select('*').eq('id', lesson_id).single();
+    let questions;
+    if (isPromoter) {
+      const canEdit = needIntro ? !!can_edit : tags.includes('монтаж: умеет');
+      const gen = await quizQuestions(user, lesson, canEdit ? 'promoter-edit' : 'promoter-base', {}, { track: 'promoter', canEdit });
+      questions = needIntro ? [...INTRO, ...(canEdit ? EDIT_SURVEY : []), ...gen] : gen;
+    } else {
+      questions = await quizQuestions(user, lesson, 'seller', await loadKnowledge(), { track: user.track || 'seller' });
     }
-    if (!quiz) {
-      const { data: lesson } = await db.from('lessons').select('*').eq('id', lesson_id).single();
-      const { data: prev } = await db.from('quizzes').select('questions,answers').eq('user_id', user.id).eq('lesson_id', lesson_id).not('finished_at', 'is', null).order('created_at', { ascending: false }).limit(3);
-      let questions;
-      if (isPromoter) {
-        const canEdit = !!can_edit;
-        const intro = [
-          {
-            q: 'Сколько вам полных лет?',
-            options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'],
-            correct: 1,
-            any: true,
-            explain: 'Участие в команде доступно с 16 лет.',
-          },
-          {
-            q: 'Умеете ли вы монтировать видео?',
-            options: ['Да, умею монтировать', 'Нет, пока не умею'],
-            correct: 0,
-            any: true,
-            explain: 'Здесь нет неверных ответов — вопрос помогает подобрать подходящие вопросы.',
-          },
-        ];
-        const editSurvey = canEdit ? [
-          {
-            q: 'В каких программах вы монтируете видео?',
-            options: ['CapCut / VN', 'Adobe Premiere Pro / After Effects', 'DaVinci Resolve / Final Cut Pro', 'Другие видеоредакторы'],
-            correct: 0,
-            any: true,
-            explain: 'Ответ сохранён в вашей анкете.',
-          },
-          {
-            q: 'Какой у вас опыт в монтаже коротких роликов (Reels, Shorts, TikTok)?',
-            options: ['Меньше 6 месяцев', 'От 6 месяцев до 1 года', 'От 1 до 2 лет', 'Более 2 лет'],
-            correct: 0,
-            any: true,
-            explain: 'Ответ сохранён в вашей анкете.',
-          },
-        ] : [];
-        const gen = await qwen.genQuiz(lesson, prev || [], {}, { track: 'promoter', canEdit });
-        questions = [...intro, ...editSurvey, ...gen];
-      } else {
-        questions = await qwen.genQuiz(lesson, prev || [], await loadKnowledge(), { track: user.track || 'seller' });
-      }
-      const ins = await db.from('quizzes').insert({ user_id: user.id, lesson_id, questions }).select().single();
-      if (ins.error) throw ins.error;
-      quiz = ins.data;
-    }
-    return { quiz_id: quiz.id, questions: quiz.questions.map(({ q, options, any }) => ({ q, options, any: !!any })) };
-  },
+    const ins = await db.from('quizzes').insert({ user_id: user.id, lesson_id, questions }).select().single();
+    if (ins.error) throw ins.error;
+    quiz = ins.data;
+  }
+  return { quiz_id: quiz.id, questions: quiz.questions.map(({ q, options, any }) => ({ q, options, any: !!any })) };
+},
 
   async 'quiz.submit'({ user }, { quiz_id, answers }) {
     const { data: quiz } = await db.from('quizzes').select('*').eq('id', quiz_id).eq('user_id', user.id).maybeSingle();
