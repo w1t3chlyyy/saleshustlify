@@ -331,6 +331,27 @@ async function openLesson(id) {
 }
 
 async function quizStart(id) {
+  if (S.user?.track === 'promoter') {
+    S.quiz = {
+      id: null,
+      pre: true,
+      lesson: id,
+      i: 0,
+      ans: [],
+      qs: [
+        {
+          q: 'Сколько вам полных лет?',
+          options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'],
+        },
+        {
+          q: 'Умеете ли вы монтировать видео?',
+          sub: 'Здесь нет неверных ответов — от вашего выбора зависят следующие вопросы',
+          options: ['Да, умею монтировать', 'Нет, пока не умею'],
+        },
+      ],
+    };
+    return quizRender();
+  }
   loading('HustlifyAI составляет вопросы для вас…');
   try {
     const d = await api('quiz.start', { lesson_id: id });
@@ -339,13 +360,14 @@ async function quizStart(id) {
   } catch (e) { toast(e.message); backTo('learn', learnHome); }
 }
 function quizRender() {
-  const { qs, i, ans } = S.quiz, q = qs[i];
+  const { qs, i, ans, pre } = S.quiz, q = qs[i];
   view(`<div class="screen no-tab">
-    <p class="mut small">Вопрос ${i + 1} из ${qs.length}</p>
-    <div class="bar" style="margin:0 0 24px"><i style="width:${i / qs.length * 100}%"></i></div>
+    <p class="mut small">${pre ? `Вопрос ${i + 1}` : `Вопрос ${i + 1} из ${qs.length}`}</p>
+    <div class="bar" style="margin:0 0 24px"><i style="width:${pre ? (i + 1) * 15 : i / qs.length * 100}%"></i></div>
     <h1 class="title" style="font-size:21px;line-height:1.3">${esc(q.q)}</h1>
+    ${q.sub || q.any ? `<p class="mut small" style="margin:6px 0 0">${esc(q.sub || 'Здесь нет неверных ответов')}</p>` : ''}
     <div style="margin-top:22px">${q.options.map((o, k) => `<button class="opt ${ans[i] === k ? 'on' : ''}" data-act="pick" data-k="${k}">${esc(o)}</button>`).join('')}</div>
-    <button class="btn" style="margin-top:24px" data-act="quizNext" ${ans[i] === undefined ? 'disabled' : ''}>${i + 1 === qs.length ? 'Завершить тест' : 'Дальше'}</button>
+    <button class="btn" style="margin-top:24px" data-act="quizNext" ${ans[i] === undefined ? 'disabled' : ''}>${!pre && i + 1 === qs.length ? 'Завершить тест' : 'Дальше'}</button>
   </div>`);
 }
 async function quizFinish() {
@@ -642,7 +664,35 @@ const A = {
   lesson: d => backTo('lesson:' + d.id, () => openLesson(d.id)),
   quizStart: d => open('quiz:' + d.id, () => quizStart(d.id)),
   pick: d => { S.quiz.ans[S.quiz.i] = Number(d.k); quizRender(); },
-  quizNext() { const q = S.quiz; if (q.i + 1 < q.qs.length) { q.i++; quizRender(); } else quizFinish(); },
+  async quizNext() {
+    const q = S.quiz;
+    if (q.pre) {
+      if (q.i === 0) {
+        if (q.ans[0] === 0) {
+          return view(`<div class="screen no-tab">
+            <div class="empty">
+              <b>Вы не можете быть приняты</b>
+              К сожалению, мы не можем принять вас в команду: сотрудничество в Hustlify доступно только с 16 лет.
+            </div>
+            <button class="btn ghost" style="margin-top:16px" data-act="learnHome">К разделам</button>
+          </div>`);
+        }
+        q.i = 1;
+        return quizRender();
+      }
+      if (q.i === 1) {
+        const canEdit = q.ans[1] === 0;
+        const savedAns = [q.ans[0], q.ans[1]];
+        loading('HustlifyAI составляет вопросы для вас…');
+        try {
+          const d = await api('quiz.start', { lesson_id: q.lesson, can_edit: canEdit });
+          S.quiz = { id: d.quiz_id, qs: d.questions, i: 2, ans: savedAns, lesson: q.lesson, pre: false };
+          return quizRender();
+        } catch (e) { toast(e.message); return backTo('learn', learnHome); }
+      }
+    }
+    if (q.i + 1 < q.qs.length) { q.i++; quizRender(); } else quizFinish();
+  },
   practiceIntro: () => backTo('practiceIntro', practiceIntro),
   practiceStart: () => open('practice', practiceStart),
   practiceSay, practiceFinish,

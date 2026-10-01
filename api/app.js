@@ -187,31 +187,93 @@ const H = {
     return { lesson: data, passed: it.passed };
   },
 
-  async 'quiz.start'({ user }, { lesson_id }) {
+  async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const items = await lessonsFor(user);
     const it = items.find(i => i.id === Number(lesson_id));
     need(it && it.unlocked, 403, 'Раздел недоступен');
+    const isPromoter = user.track === 'promoter';
     let { data: open } = await db.from('quizzes').select('*').eq('user_id', user.id).eq('lesson_id', lesson_id).is('finished_at', null).order('created_at', { ascending: false }).limit(1);
     let quiz = open?.[0];
+    // Для продвигающих пересоздаём незавершённый тест, если выбор «умею/не умею монтировать» изменился
+    if (quiz && isPromoter && can_edit !== undefined) {
+      await db.from('quizzes').delete().eq('id', quiz.id);
+      quiz = null;
+    }
     if (!quiz) {
       const { data: lesson } = await db.from('lessons').select('*').eq('id', lesson_id).single();
       const { data: prev } = await db.from('quizzes').select('questions,answers').eq('user_id', user.id).eq('lesson_id', lesson_id).not('finished_at', 'is', null).order('created_at', { ascending: false }).limit(3);
-      const questions = await qwen.genQuiz(lesson, prev || [], await loadKnowledge());
+      let questions;
+      if (isPromoter) {
+        const canEdit = !!can_edit;
+        const intro = [
+          {
+            q: 'Сколько вам полных лет?',
+            options: ['Меньше 16 лет', '16–17 лет', '18–24 года', '25 лет и старше'],
+            correct: 1,
+            any: true,
+            explain: 'Участие в команде доступно с 16 лет.',
+          },
+          {
+            q: 'Умеете ли вы монтировать видео?',
+            options: ['Да, умею монтировать', 'Нет, пока не умею'],
+            correct: 0,
+            any: true,
+            explain: 'Здесь нет неверных ответов — вопрос помогает подобрать подходящие вопросы.',
+          },
+        ];
+        const editSurvey = canEdit ? [
+          {
+            q: 'В каких программах вы монтируете видео?',
+            options: ['CapCut / VN', 'Adobe Premiere Pro / After Effects', 'DaVinci Resolve / Final Cut Pro', 'Другие видеоредакторы'],
+            correct: 0,
+            any: true,
+            explain: 'Ответ сохранён в вашей анкете.',
+          },
+          {
+            q: 'Какой у вас опыт в монтаже коротких роликов (Reels, Shorts, TikTok)?',
+            options: ['Меньше 6 месяцев', 'От 6 месяцев до 1 года', 'От 1 до 2 лет', 'Более 2 лет'],
+            correct: 0,
+            any: true,
+            explain: 'Ответ сохранён в вашей анкете.',
+          },
+        ] : [];
+        const gen = await qwen.genQuiz(lesson, prev || [], {}, { track: 'promoter', canEdit });
+        questions = [...intro, ...editSurvey, ...gen];
+      } else {
+        questions = await qwen.genQuiz(lesson, prev || [], await loadKnowledge(), { track: user.track || 'seller' });
+      }
       const ins = await db.from('quizzes').insert({ user_id: user.id, lesson_id, questions }).select().single();
       if (ins.error) throw ins.error;
       quiz = ins.data;
     }
-    return { quiz_id: quiz.id, questions: quiz.questions.map(({ q, options }) => ({ q, options })) };
+    return { quiz_id: quiz.id, questions: quiz.questions.map(({ q, options, any }) => ({ q, options, any: !!any })) };
   },
 
   async 'quiz.submit'({ user }, { quiz_id, answers }) {
     const { data: quiz } = await db.from('quizzes').select('*').eq('id', quiz_id).eq('user_id', user.id).maybeSingle();
     need(quiz && !quiz.finished_at, 404, 'Тест не найден или уже завершён');
     need(Array.isArray(answers) && answers.length === quiz.questions.length, 400, 'Ответьте на все вопросы');
-    const right = quiz.questions.filter((q, i) => answers[i] === q.correct).length;
-    const score = Math.round((right / quiz.questions.length) * 100);
+    // Если в первом вопросе о возрасте выбран вариант «Меньше 16 лет»
+    if (user.track === 'promoter' && quiz.questions[0]?.any && answers[0] === 0) {
+      throw new Http(403, 'К сожалению, мы не можем принять вас: участие доступно только с 16 лет');
+    }
+    const graded = quiz.questions.filter(q => !q.any);
+    const right = quiz.questions.filter((q, i) => !q.any && answers[i] === q.correct).length;
+    const score = graded.length ? Math.round((right / graded.length) * 100) : 100;
     const passed = score >= await setting('quiz_pass_percent', 70);
     await db.from('quizzes').update({ answers, score, passed, finished_at: new Date().toISOString() }).eq('id', quiz.id);
+    if (user.track === 'promoter' && quiz.questions[1]?.any) {
+      const canEdit = answers[1] === 0;
+      const tags = new Set((user.tags || []).filter(t => !/^(монтаж:|программа:|опыт:)/.test(t)));
+      tags.add(canEdit ? 'монтаж: умеет' : 'монтаж: без опыта');
+      if (canEdit && quiz.questions[2]?.any && quiz.questions[2].options[answers[2]]) {
+        tags.add('программа: ' + quiz.questions[2].options[answers[2]]);
+      }
+      if (canEdit && quiz.questions[3]?.any && quiz.questions[3].options[answers[3]]) {
+        tags.add('опыт: ' + quiz.questions[3].options[answers[3]]);
+      }
+      await db.from('users').update({ tags: [...tags] }).eq('id', user.id);
+    }
     let reward = 0;
     if (passed) {
       const { data: old } = await db.from('lesson_progress').select('best_score,passed').eq('user_id', user.id).eq('lesson_id', quiz.lesson_id).maybeSingle();
@@ -224,7 +286,13 @@ const H = {
     }
     return {
       score, passed, reward,
-      review: quiz.questions.map((q, i) => ({ q: q.q, options: q.options, correct: q.correct, picked: answers[i], explain: q.explain })),
+      review: quiz.questions.map((q, i) => ({
+        q: q.q,
+        options: q.options,
+        correct: q.any ? answers[i] : q.correct,
+        picked: answers[i],
+        explain: q.explain,
+      })),
     };
   },
 
