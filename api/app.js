@@ -39,7 +39,7 @@ const assignmentView = a => ({
 });
 
 async function loadKnowledge() {
-    const [p, c] = await Promise.all([
+  const [p, c] = await Promise.all([
     kb.from(PRODUCTS).select('*').limit(30),
     kb.from(CASES).select('*').limit(30),
   ]);
