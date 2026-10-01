@@ -206,7 +206,7 @@ async function learnHome() {
     </button>`).join('');
   view(`<div class="screen ${trained ? '' : 'no-tab'}">
     <h1 class="title">Обучение</h1>
-    <p class="sub">${total ? `Пройдено ${done} из ${total}. После каждого раздела — тест, который HustlifyAI составляет лично для вас.` : 'Материалы появятся здесь совсем скоро.'}</p>
+    <p class="sub">${total ? `Пройдено ${done} из ${total}. После каждого раздела — тест, который HustlifyAI составляет лично для вас.${d.lesson_reward ? ` За каждый пройденный раздел — +${d.lesson_reward} HustlifyCoin.` : ''}` : 'Материалы появятся здесь совсем скоро.'}</p>
     <div class="bar" style="margin:0 0 22px"><i style="width:${total ? done / total * 100 : 0}%"></i></div>
     ${total ? `<div class="list">${rows}</div>` : ''}
     <h2 class="h2">Финал</h2>
@@ -257,7 +257,7 @@ async function quizFinish() {
         ${x.explain ? `<p class="mut small" style="margin:12px 0 0">${esc(x.explain)}</p>` : ''}
       </div>`).join('');
     view(`<div class="screen no-tab">
-      <div class="hero"><div class="num">${r.score}%</div><div class="cap">${r.passed ? 'Тест сдан' : 'Нужно ещё раз'}</div></div>
+      <div class="hero"><div class="num">${r.score}%</div><div class="cap">${r.passed ? 'Тест сдан' + (r.reward ? ` · +${r.reward} HustlifyCoin` : '') : 'Нужно ещё раз'}</div></div>
       ${review}
       ${r.passed ? `<button class="btn" data-act="learnHome">К разделам</button>`
         : `<button class="btn" data-act="quizStart" data-id="${S.quiz.lesson}">Пересдать с новыми вопросами</button><button class="btn ghost" style="margin-top:10px" data-act="lesson" data-id="${S.quiz.lesson}">Перечитать материал</button>`}
@@ -347,6 +347,7 @@ pages.home = async () => {
     </div>
     <div class="list">
       <button class="row" data-act="tab" data-k="work">${I.work}<div class="grow"><div class="t">Взять подборку</div><div class="d">Бизнесы без сайта в вашем городе</div></div>${I.chev}</button>
+      <button class="row" data-act="mentor">${I.me}<div class="grow"><div class="t">Связаться с наставником</div><div class="d">Вопросы по работе, разбор сделок</div></div>${I.chev}</button>
       <button class="row" data-act="learnHome">${I.book}<div class="grow"><div class="t">Методичка</div><div class="d">Все материалы обучения</div></div>${I.chev}</button>
       <button class="row" data-act="practiceIntro">${I.chat}<div class="grow"><div class="t">Тренировка с клиентом</div><div class="d">Отработайте возражения</div></div>${I.chev}</button>
     </div>
@@ -509,6 +510,12 @@ const A = {
     token = r.token; try { localStorage.setItem('h_token', token); } catch {} S.user = r.user;
     loading();
     try { await enter(); } catch (e) { renderAuth(); throw e; }
+  },
+  mentor() {
+    const u = S.me?.mentor;
+    if (!u) return toast('Контакт наставника пока не указан');
+    const url = 'https://t.me/' + u;
+    if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
   },
   learnHome: () => backTo('learn', learnHome),
   lesson: d => backTo('lesson:' + d.id, () => openLesson(d.id)),

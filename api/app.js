@@ -13,6 +13,8 @@ const pub = u => ({
 });
 const today = () => new Date().toLocaleDateString('en-CA', { timeZone: process.env.TZ_NAME || 'Europe/Moscow' });
 const need = (cond, code, msg) => { if (!cond) throw new Http(code, msg); };
+// Юзернейм наставника: только допустимые символы Telegram, без @
+const mentorUsername = v => { const u = String(v || '').trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//, ''); return /^[A-Za-z0-9_]{4,32}$/.test(u) ? u : ''; };
 const requireTrained = u => need(u.training_done || u.role === 'admin', 403, 'Сначала пройдите обучение и практику');
 
 async function percentFor(u) {
@@ -120,6 +122,7 @@ const H = {
       today_total: todays?.length || 0,
       today_done: (todays || []).filter(a => ['submitted', 'approved'].includes(a.status)).length,
       leads: leads || 0, approved_total: won || 0,
+      mentor: mentorUsername(await setting('mentor_username', process.env.MENTOR_USERNAME || '')),
     };
   },
 
@@ -138,7 +141,7 @@ const H = {
   // ── обучение
   async 'learn.lessons'({ user }) {
     const items = await lessonsFor(user);
-    return { items, all_passed: items.length > 0 && items.every(i => i.passed), training_done: user.training_done };
+    return { items, all_passed: items.length > 0 && items.every(i => i.passed), training_done: user.training_done, lesson_reward: Number(await setting('lesson_reward_coins', 3)) || 0 };
   },
 
   async 'learn.lesson'({ user }, { id }) {
@@ -175,12 +178,18 @@ const H = {
     const score = Math.round((right / quiz.questions.length) * 100);
     const passed = score >= await setting('quiz_pass_percent', 70);
     await db.from('quizzes').update({ answers, score, passed, finished_at: new Date().toISOString() }).eq('id', quiz.id);
+    let reward = 0;
     if (passed) {
-      const { data: old } = await db.from('lesson_progress').select('best_score').eq('user_id', user.id).eq('lesson_id', quiz.lesson_id).maybeSingle();
+      const { data: old } = await db.from('lesson_progress').select('best_score,passed').eq('user_id', user.id).eq('lesson_id', quiz.lesson_id).maybeSingle();
       await db.from('lesson_progress').upsert({ user_id: user.id, lesson_id: quiz.lesson_id, passed: true, best_score: Math.max(score, old?.best_score || 0) });
+      // Коины даём только за первое прохождение раздела, пересдача награду не повторяет
+      if (!old?.passed) {
+        reward = Number(await setting('lesson_reward_coins', 3)) || 0;
+        if (reward > 0) await db.rpc('add_coins', { p_user: user.id, p_delta: reward, p_reason: 'Раздел обучения пройден (id ' + quiz.lesson_id + ')' });
+      }
     }
     return {
-      score, passed,
+      score, passed, reward,
       review: quiz.questions.map((q, i) => ({ q: q.q, options: q.options, correct: q.correct, picked: answers[i], explain: q.explain })),
     };
   },
