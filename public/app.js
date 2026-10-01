@@ -514,7 +514,7 @@ const A = {
   mentor() {
     const u = S.me?.mentor;
     if (!u) return toast('Контакт наставника пока не указан');
-    const url = 'https://t.me/HustlifyMentor' + u;
+    const url = 'https://t.me/' + u;
     if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
   },
   learnHome: () => backTo('learn', learnHome),
