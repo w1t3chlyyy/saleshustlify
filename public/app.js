@@ -7,8 +7,32 @@ const CUR = '₽';
 const money = n => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ' + CUR;
 const haptic = () => { try { tg?.HapticFeedback?.impactOccurred('light'); } catch {} };
 
-let token = localStorage.getItem('h_token') || '';
+let token = ''; try { token = localStorage.getItem('h_token') || ''; } catch {}
 const S = { user: null, me: null, tab: 'home', wseg: 'today', tseg: 'coins', aseg: 'stats', authMode: 'login', adminChat: [], assign: {}, leads: {} };
+
+// ───────── навигация: стек экранов для кнопки «Назад»
+const NAV = [];   // предыдущие экраны: { key, fn }
+let cur = null;   // текущий экран
+// Открыть новый экран. Если ключ совпадает с текущим, экран просто перерисовывается без записи в историю
+function open(key, fn) {
+  if (cur && cur.key !== key) NAV.push(cur);
+  cur = { key, fn };
+  return fn();
+}
+// Вернуться на предыдущий экран
+function back() {
+  const prev = NAV.pop();
+  if (!prev) return;
+  cur = prev;
+  return prev.fn();
+}
+// Вернуться на экран с ключом, который уже есть в истории; если его нет, открыть как новый
+function backTo(key, fn) {
+  const i = NAV.map(x => x.key).lastIndexOf(key);
+  if (i >= 0) { const t = NAV[i]; NAV.length = i; cur = t; return t.fn(); }
+  return open(key, fn);
+}
+const resetNav = () => { NAV.length = 0; cur = null; };
 
 // ───────── icons
 const ic = (p, cls = 'ico') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
@@ -59,13 +83,18 @@ function toast(msg) {
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-function view(html, { tabbar = false } = {}) {
+// Каждый экран получает сверху кнопку «Назад», если есть куда возвращаться
+function view(html, { tabbar = false, back: showBack = true } = {}) {
   closeSheet();
-  $('#app').innerHTML = html;
+  const bar = showBack && NAV.length
+    ? `<div class="topbar"><div class="inner"><button data-act="back" aria-label="Назад">${I.back}Назад</button></div></div>`
+    : '';
+  document.body.classList.toggle('has-back', !!bar);
+  $('#app').innerHTML = bar + html;
   $('#tabbar').style.display = tabbar ? 'flex' : 'none';
   window.scrollTo(0, 0);
 }
-const loading = msg => view(`<div class="screen no-tab"><div class="spin"></div>${msg ? `<p class="mut small" style="text-align:center">${esc(msg)}</p>` : ''}</div>`);
+const loading = msg => view(`<div class="screen no-tab"><div class="spin"></div>${msg ? `<p class="mut small" style="text-align:center">${esc(msg)}</p>` : ''}</div>`, { back: false });
 const errBlock = e => `<div class="empty"><b>Не получилось</b>${esc(e.message)}</div>`;
 
 function sheet(html) {
@@ -82,9 +111,11 @@ function logout(silent) {
   try { localStorage.removeItem('h_token'); } catch {}
   token = '';
   Object.assign(S, { user: null, me: null, adminChat: [], assign: {}, leads: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
+  resetNav();
   renderAuth();
   if (silent) toast('Войдите снова');
 }
+
 function md(src) {
   let s = esc(src)
     .replace(/^### (.*)$/gm, '<h4>$1</h4>').replace(/^## (.*)$/gm, '<h3>$1</h3>').replace(/^# (.*)$/gm, '<h2>$1</h2>')
@@ -135,13 +166,19 @@ function renderAuth() {
     <label class="field"><span>Логин</span><input id="a_login" autocapitalize="none" autocomplete="username" placeholder="anna_ivanova"></label>
     <label class="field"><span>Пароль</span><input id="a_pass" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="Минимум 8 символов" data-enter="authSubmit"></label>
     <button class="btn" style="margin-top:8px" data-act="authSubmit">${reg ? 'Создать аккаунт' : 'Войти'}</button>
-  </div>`);
+  </div>`, { back: false });
 }
 
+// Точка входа после авторизации: сбрасывает историю и открывает корневой экран
 async function enter() {
   const m = await api('me'); S.me = m; S.user = m.user;
-  if (!S.user.training_done && S.user.role !== 'admin') return learnHome();
-  S.tab = 'home'; renderTabbar(); return pages.home();
+  resetNav();
+  if (!S.user.training_done && S.user.role !== 'admin') {
+    cur = { key: 'learn', fn: learnHome };
+    return learnHome();
+  }
+  S.tab = 'home'; cur = { key: 'tab:home', fn: () => go('home') };
+  renderTabbar(); return pages.home();
 }
 
 // ───────── tabs
@@ -149,7 +186,11 @@ const TABS = [['home', 'Кабинет', I.home], ['work', 'Работа', I.wor
 function renderTabbar() {
   $('#tabbar').innerHTML = TABS.map(([k, l, i]) => `<button data-act="tab" data-k="${k}" class="${S.tab === k ? 'on' : ''}" aria-label="${l}">${i}<span>${l}</span></button>`).join('');
 }
-async function go(tab) { S.tab = tab; renderTabbar(); try { await pages[tab](); } catch (e) { view(`<div class="screen">${errBlock(e)}</div>`, { tabbar: true }); } }
+async function go(tab) {
+  if (!S.user?.training_done && S.user?.role !== 'admin') return backTo('learn', learnHome);
+  S.tab = tab; renderTabbar();
+  try { await pages[tab](); } catch (e) { view(`<div class="screen">${errBlock(e)}</div>`, { tabbar: true }); }
+}
 
 // ───────── learning
 async function learnHome() {
@@ -181,7 +222,6 @@ async function openLesson(id) {
   const d = await api('learn.lesson', { id });
   S.lessonId = d.lesson.id;
   view(`<div class="screen no-tab">
-    <button class="back" data-act="learnHome">${I.back}Разделы</button>
     <h1 class="title">${esc(d.lesson.title)}</h1>
     <div class="prose" style="margin-top:22px">${md(d.lesson.body)}</div>
     ${S.user.training_done ? '' : `<button class="btn" style="margin-top:26px" data-act="quizStart" data-id="${d.lesson.id}">${d.passed ? 'Пересдать тест' : 'Пройти тест'}</button>`}
@@ -194,7 +234,7 @@ async function quizStart(id) {
     const d = await api('quiz.start', { lesson_id: id });
     S.quiz = { id: d.quiz_id, qs: d.questions, i: 0, ans: [], lesson: id };
     quizRender();
-  } catch (e) { toast(e.message); learnHome(); }
+  } catch (e) { toast(e.message); backTo('learn', learnHome); }
 }
 function quizRender() {
   const { qs, i, ans } = S.quiz, q = qs[i];
@@ -222,13 +262,12 @@ async function quizFinish() {
       ${r.passed ? `<button class="btn" data-act="learnHome">К разделам</button>`
         : `<button class="btn" data-act="quizStart" data-id="${S.quiz.lesson}">Пересдать с новыми вопросами</button><button class="btn ghost" style="margin-top:10px" data-act="lesson" data-id="${S.quiz.lesson}">Перечитать материал</button>`}
     </div>`);
-  } catch (e) { toast(e.message); learnHome(); }
+  } catch (e) { toast(e.message); backTo('learn', learnHome); }
 }
 
 // ───────── practice
 function practiceIntro() {
   view(`<div class="screen no-tab">
-    <button class="back" data-act="learnHome">${I.back}Назад</button>
     <h1 class="title">Практика с клиентом</h1>
     <p class="sub">Перед вами вредный клиент с характером. Он возражает, торгуется и проверяет, знаете ли вы продукт. Ваша задача — выявить потребность и довести его до покупки.</p>
     <div class="list">
@@ -245,7 +284,7 @@ async function practiceStart() {
     const d = await api('practice.start');
     S.p = { id: d.session_id, msgs: d.messages, left: d.turns_left, busy: false };
     chatRender();
-  } catch (e) { toast(e.message); learnHome(); }
+  } catch (e) { toast(e.message); backTo('learn', learnHome); }
 }
 function bubbles(list) { return list.map(m => `<div class="bub ${m.role === 'user' ? 'u' : 'c'}">${esc(m.content)}</div>`).join(''); }
 function chatRender() {
@@ -413,7 +452,7 @@ pages.me = async () => {
 
 // ───────── admin
 async function adminView() {
-  view(`<div class="screen no-tab"><button class="back" data-act="tab" data-k="me">${I.back}Профиль</button>
+  view(`<div class="screen no-tab">
     <h1 class="title">Администратор</h1><p class="sub">Управление платформой</p>
     ${segHtml('aseg', S.aseg, [['stats', 'Обзор'], ['queue', 'Проверка'], ['ai', 'HustlifyAI']])}<div id="abody"><div class="spin"></div></div></div>`);
   try { await ({ stats: aStats, queue: aQueue, ai: aAi })[S.aseg](); } catch (e) { $('#abody').innerHTML = errBlock(e); }
@@ -424,8 +463,8 @@ async function aStats() {
     <div class="card stat"><b>${s.users}</b><span>Сотрудников</span></div><div class="card stat"><b>${s.trained}</b><span>Прошли обучение</span></div>
     <div class="card stat"><b>${s.pending_reviews}</b><span>Ждут проверки</span></div><div class="card stat"><b>${s.approved_businesses}</b><span>Принято работ</span></div>
     <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div>
-    <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит Qwen</span></div>
-    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога передаётся</span></div></div></div>
+    <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит HustlifyAI</span></div>
+    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога передаётся</span></div></div>
     <h2 class="h2">Записать продажу</h2>
     <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none"></label>
     <label class="field"><span>ID бизнеса (вместо логина)</span><input id="s_biz" inputmode="numeric"></label>
@@ -460,27 +499,30 @@ async function aiSend(text) {
 
 // ───────── actions
 const A = {
-  tab: d => go(d.k),
+  back: () => back(),
+  tab: d => open('tab:' + d.k, () => go(d.k)),
   logout: () => logout(),
   authMode: d => { S.authMode = d.k; renderAuth(); },
   async authSubmit() {
     const reg = S.authMode === 'register';
     const r = await api(reg ? 'auth.register' : 'auth.login', { login: val('a_login'), password: $('#a_pass').value, full_name: reg ? val('a_name') : undefined });
-    token = r.token; localStorage.setItem('h_token', token); S.user = r.user;
+    token = r.token; try { localStorage.setItem('h_token', token); } catch {} S.user = r.user;
     loading();
     try { await enter(); } catch (e) { renderAuth(); throw e; }
   },
-  learnHome: () => learnHome(),
-  lesson: d => openLesson(d.id),
-  quizStart: d => quizStart(d.id),
+  learnHome: () => backTo('learn', learnHome),
+  lesson: d => backTo('lesson:' + d.id, () => openLesson(d.id)),
+  quizStart: d => open('quiz:' + d.id, () => quizStart(d.id)),
   pick: d => { S.quiz.ans[S.quiz.i] = Number(d.k); quizRender(); },
   quizNext() { const q = S.quiz; if (q.i + 1 < q.qs.length) { q.i++; quizRender(); } else quizFinish(); },
-  practiceIntro, practiceStart, practiceSay, practiceFinish,
+  practiceIntro: () => backTo('practiceIntro', practiceIntro),
+  practiceStart: () => open('practice', practiceStart),
+  practiceSay, practiceFinish,
   async toCabinet() { loading(); await enter(); },
   wseg: d => { S.wseg = d.k; pages.work(); },
   tseg: d => { S.tseg = d.k; pages.top(); },
   aseg: d => { S.aseg = d.k; adminView(); },
-  adminOpen: () => adminView(),
+  adminOpen: () => open('admin', adminView),
   async getBase() {
     const city = val('city'); if (!city) return toast('Укажите город');
     $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы без сайта…</p>`;
@@ -558,7 +600,7 @@ document.addEventListener('keydown', e => {
   try { tg?.ready(); tg?.expand(); tg?.disableVerticalSwipes?.(); } catch {}
   applyTheme(); tg?.onEvent?.('themeChanged', applyTheme);
   if (!tg?.initData) {
-    view(`<div class="screen no-tab"><div class="brand">Hustlify</div><div class="empty"><b>Откройте в Telegram</b>Приложение работает только внутри бота.</div></div>`);
+    view(`<div class="screen no-tab"><div class="brand">Hustlify</div><div class="empty"><b>Откройте в Telegram</b>Приложение работает только внутри бота.</div></div>`, { back: false });
     return;
   }
   if (!token) return renderAuth();

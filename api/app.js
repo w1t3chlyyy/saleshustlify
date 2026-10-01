@@ -3,7 +3,7 @@ const { hashPassword, checkPassword, signToken, readToken, validateInitData } = 
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
 const { refillCity } = require('../lib/places');
-const { chatWithAdminAgent, stats, PRODUCTS, CASES } = require('../lib/admin');
+const { chatWithAdminAgent, stats, PRODUCTS } = require('../lib/admin');
 
 // ───────── helpers
 const pub = u => ({
@@ -38,6 +38,7 @@ const assignmentView = a => ({
   business: a.business ? { name: a.business.name, category: a.business.category, address: a.business.address, phone: a.business.phone, info: a.business.info } : null,
 });
 
+// Каталог и кейсы лежат в одной таблице, различаются колонкой section ('catalog' | 'case')
 async function loadKnowledge() {
   const { data, error } = await kb.from(PRODUCTS).select('*').limit(300);
   if (error) console.error('knowledge base:', error.message);
@@ -47,6 +48,7 @@ async function loadKnowledge() {
     cases: rows.filter(r => r.section === 'case'),
   };
 }
+
 async function lessonsFor(user) {
   const { data: lessons } = await db.from('lessons').select('id,position,title').eq('is_published', true).order('position').order('id');
   const { data: prog } = await db.from('lesson_progress').select('*').eq('user_id', user.id);
@@ -421,6 +423,8 @@ module.exports = async (req, res) => {
       need(user && !user.is_blocked, 401, 'Нужно войти');
       need(Number(user.tg_id) === tgUser.id, 401, 'Нужно войти');
       need(!action.startsWith('admin.') || user.role === 'admin', 403, 'Нет доступа');
+      // Без пройденного обучения доступны только профиль, обучение, тесты и практика
+      if (!/^(me$|learn\.|quiz\.|practice\.)/.test(action)) requireTrained(user);
       ctx.user = user;
     }
     res.json(await handler(ctx, p));
