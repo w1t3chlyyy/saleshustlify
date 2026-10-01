@@ -165,7 +165,7 @@ async function learnHome() {
     </button>`).join('');
   view(`<div class="screen ${trained ? '' : 'no-tab'}">
     <h1 class="title">Обучение</h1>
-    <p class="sub">${total ? `Пройдено ${done} из ${total}. После каждого раздела — тест, который Qwen составляет лично для вас.` : 'Материалы появятся здесь совсем скоро.'}</p>
+    <p class="sub">${total ? `Пройдено ${done} из ${total}. После каждого раздела — тест, который HustlifyAI составляет лично для вас.` : 'Материалы появятся здесь совсем скоро.'}</p>
     <div class="bar" style="margin:0 0 22px"><i style="width:${total ? done / total * 100 : 0}%"></i></div>
     ${total ? `<div class="list">${rows}</div>` : ''}
     <h2 class="h2">Финал</h2>
@@ -189,7 +189,7 @@ async function openLesson(id) {
 }
 
 async function quizStart(id) {
-  loading('Qwen составляет вопросы для вас…');
+  loading('HustlifyAI составляет вопросы для вас…');
   try {
     const d = await api('quiz.start', { lesson_id: id });
     S.quiz = { id: d.quiz_id, qs: d.questions, i: 0, ans: [], lesson: id };
@@ -415,7 +415,7 @@ pages.me = async () => {
 async function adminView() {
   view(`<div class="screen no-tab"><button class="back" data-act="tab" data-k="me">${I.back}Профиль</button>
     <h1 class="title">Администратор</h1><p class="sub">Управление платформой</p>
-    ${segHtml('aseg', S.aseg, [['stats', 'Обзор'], ['queue', 'Проверка'], ['ai', 'Qwen']])}<div id="abody"><div class="spin"></div></div></div>`);
+    ${segHtml('aseg', S.aseg, [['stats', 'Обзор'], ['queue', 'Проверка'], ['ai', 'HustlifyAI']])}<div id="abody"><div class="spin"></div></div></div>`);
   try { await ({ stats: aStats, queue: aQueue, ai: aAi })[S.aseg](); } catch (e) { $('#abody').innerHTML = errBlock(e); }
 }
 async function aStats() {
@@ -443,7 +443,7 @@ async function aQueue() {
 function aAi() {
   const ch = S.adminChat;
   $('#abody').innerHTML = `<div class="chat" id="chat">${ch.length ? aiBubbles() : `<div class="list">${['Покажи статистику по платформе', 'Кто ждёт проверки и сколько', 'Добавь в магазин промокод на 15% за 50 коинов'].map(t => `<button class="row" data-act="aiSend" data-t="${esc(t)}"><div class="grow">${esc(t)}</div>${I.chev}</button>`).join('')}</div>`}</div>
-    <div class="composer"><div class="in"><input id="ai" placeholder="Задача для Qwen" data-enter="aiSend" autocomplete="off"><button class="send" data-act="aiSend" aria-label="Отправить">${I.send}</button></div></div>`;
+    <div class="composer"><div class="in"><input id="ai" placeholder="Задача для HustlifyAI" data-enter="aiSend" autocomplete="off"><button class="send" data-act="aiSend" aria-label="Отправить">${I.send}</button></div></div>`;
 }
 const aiBubbles = () => S.adminChat.map(m => m.role === 'user' ? `<div class="bub u">${esc(m.content)}</div>` : `<div class="bub c prose">${md(m.content)}${m.actions?.length ? `<p class="mut small" style="margin:8px 0 0">Действия: ${esc(m.actions.map(a => a.tool + (a.ok ? '' : ' (ошибка)')).join(', '))}</p>` : ''}</div>`).join('');
 async function aiSend(text) {
