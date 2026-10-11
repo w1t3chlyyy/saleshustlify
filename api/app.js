@@ -22,7 +22,21 @@ const requirePromoter = u => need(u.track === 'promoter' || u.role === 'admin', 
 
 async function notifyAdmins(text) {
   const { data } = await db.from('users').select('tg_id').eq('role', 'admin').not('tg_id', 'is', null);
-  for (const a of data || []) await notify(a.tg_id, text);
+  const sent = new Set();
+  for (const a of data || []) {
+    if (a.tg_id && !sent.has(String(a.tg_id))) {
+      sent.add(String(a.tg_id));
+      await notify(a.tg_id, text);
+    }
+  }
+  if (process.env.ADMIN_TG_IDS) {
+    for (const tid of process.env.ADMIN_TG_IDS.split(',').map(s => s.trim()).filter(Boolean)) {
+      if (!sent.has(String(tid))) {
+        sent.add(String(tid));
+        await notify(tid, text);
+      }
+    }
+  }
 }
 
 // Прямые ссылки на карточку бизнеса в Яндекс Картах и 2ГИС (без привязки к IP)
@@ -546,6 +560,8 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       if (up.error) throw up.error;
     }
     await db.from('assignments').update({ status: 'submitted', proof_text: t.slice(0, 2000), proof_path: path, submitted_at: new Date().toISOString() }).eq('id', a.id);
+    const { data: biz } = await db.from('businesses').select('name').eq('id', a.business_id).maybeSingle();
+    await notifyAdmins(`📋 Новая работа на проверке!\nСотрудник: ${user.full_name} (@${user.login})\nБизнес: «${biz?.name || 'Бизнес'}»\nОтчёт: ${t.slice(0, 140)}`);
     return { ok: true };
   },
 
@@ -593,6 +609,14 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const { data: item } = await db.from('shop_items').select('*').eq('id', item_id).eq('is_active', true).maybeSingle();
     need(item, 404, 'Товар не найден');
     need(item.kind === 'promo' || item.stock === null || item.stock > 0, 409, 'Товар закончился');
+
+    const isBoost = item.kind === 'boost' || Number(item.payload?.percent) > 0;
+    // Если товар начисляет процент, а сотрудник — продвигающий (записывает видео)
+    if (isBoost && user.track === 'promoter') {
+      await notify(user.tg_id, 'ℹ️ У вас не процентная ставка! В роли продвигающего действует фиксированная оплата за выполненные видео-задания, поэтому буст процента к вам не применяется.');
+      throw new Http(400, 'У вас не процентная ставка! В роли продвигающего действует оплата за выполненные видео-задания.');
+    }
+
     need(user.coins >= item.price, 402, 'Не хватает коинов');
     // Промокод берём из загруженных админом кодов; если не получилось списать коины, код возвращаем
     let promo = null;
@@ -615,18 +639,33 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       }
     }
     let result = {};
+    let purchaseStatus = 'completed';
     if (item.kind === 'promo') {
       result = { code: promo, discount_percent: item.payload?.discount_percent };
-    } else if (item.kind === 'boost') {
-      const until = new Date(Date.now() + (item.payload?.days || 7) * 864e5).toISOString();
-      await db.from('users').update({ percent_boost: item.payload?.percent || 0, boost_until: until }).eq('id', user.id);
-      result = { percent: item.payload?.percent, until };
+    } else if (isBoost) {
+      const pVal = Number(item.payload?.percent) || 3;
+      const dVal = Number(item.payload?.days) || 14;
+      const until = new Date(Date.now() + dVal * 864e5).toISOString();
+      await db.from('users').update({ percent_boost: pVal, boost_until: until }).eq('id', user.id);
+      result = { percent: pVal, until };
+      await notify(user.tg_id, `Буст активирован! +${pVal}% к ставке на ${dVal} дней.`);
     } else {
-      result = { status: 'pending' };
-      const { data: admins } = await db.from('users').select('tg_id').eq('role', 'admin').not('tg_id', 'is', null);
-      for (const a of admins || []) await notify(a.tg_id, `Покупка в магазине: ${user.full_name} (@${user.login}) — «${item.title}»`);
+      purchaseStatus = 'pending';
+      const instructions = item.action_instructions || item.description || 'Требуется вмешательство администратора';
+      result = { status: 'pending', instructions };
+      await notifyAdmins(`🛍 Покупка на проверку!\nСотрудник: ${user.full_name} (@${user.login})\nТовар: «${item.title}» (${item.price} HC)\nИнструкция: ${instructions}\nРаздел: «Проверка» в панели админа`);
+      await notify(user.tg_id, `Заявка на «${item.title}» принята! Администратор уже уведомлён и свяжется с вами.`);
     }
-    await db.from('purchases').insert({ user_id: user.id, item_id: item.id, title: item.title, price: item.price, result });
+    await db.from('purchases').insert({
+      user_id: user.id,
+      item_id: item.id,
+      title: item.title,
+      price: item.price,
+      status: purchaseStatus,
+      instructions: item.action_instructions || item.description || null,
+      result,
+      created_at: new Date().toISOString(),
+    });
     return { ok: true, result, coins: spend.data };
   },
 
@@ -713,6 +752,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const sent = qwen.compact(k.products, 5000).length + qwen.compact(k.cases, 3000).length;
     const full = qwen.compact(k.products, 1e9).length + qwen.compact(k.cases, 1e9).length;
     const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
+    const { data: sItems } = await db.from('shop_items').select('*').order('id');
     return {
       ...(await stats()),
       kb_products: k.products.length,
@@ -721,6 +761,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       kb_full: full,
       guide_url: guideUrl,
       products_list: [...k.products, ...k.cases],
+      shop_items_list: sItems || [],
     };
   },
 
@@ -798,7 +839,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { ok: true };
   },
 
-  async 'admin.sale'({ user: admin }, { business_id, login, amount, note }) {
+  async 'admin.sale'({ user: admin }, { business_id, login, amount, coins, note }) {
     const sum = Number(amount);
     need(sum > 0, 400, 'Укажите сумму покупки');
     let worker;
@@ -812,11 +853,43 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     need(worker, 404, 'Сотрудник не найден');
     const { percent } = await percentFor(worker);
     const payout = Math.round(sum * percent) / 100;
-    await db.from('sales').insert({ user_id: worker.id, business_id: business_id || null, amount: sum, percent, payout, note: note || null });
+    const coinsAwarded = Math.max(0, parseInt(coins, 10) || 0);
+
+    await db.from('sales').insert({ user_id: worker.id, business_id: business_id || null, amount: sum, percent, payout, coins: coinsAwarded, note: note || null });
     await db.rpc('add_money', { p_user: worker.id, p_amount: payout });
-    await db.from('audit_log').insert({ admin_id: admin.id, action: 'sale', payload: { worker: worker.login, sum, percent, payout } });
-    await notify(worker.tg_id, `Продажа! Вам начислено ${payout} ₽ (${percent}% от ${sum} ₽)`);
-    return { ok: true, worker: worker.full_name, percent, payout };
+    if (coinsAwarded > 0) {
+      await db.rpc('add_coins', { p_user: worker.id, p_delta: coinsAwarded, p_reason: 'Коины за продажу' + (business_id ? ` (бизнес #${business_id})` : '') });
+    }
+    await db.from('audit_log').insert({ admin_id: admin.id, action: 'sale', payload: { worker: worker.login, sum, percent, payout, coins: coinsAwarded } });
+    const coinText = coinsAwarded > 0 ? ` + ${coinsAwarded} HustlifyCoin` : '';
+    await notify(worker.tg_id, `Продажа! Вам начислено ${payout} ₽ (${percent}% от ${sum} ₽)${coinText}`);
+    return { ok: true, worker: worker.full_name, percent, payout, coins: coinsAwarded };
+  },
+
+  async 'admin.promo_payout'({ user: admin }, { login, amount, coins, note }) {
+    const sum = Math.max(0, Number(amount) || 0);
+    const coinsAwarded = Math.max(0, parseInt(coins, 10) || 0);
+    need(sum > 0 || coinsAwarded > 0, 400, 'Укажите сумму выплаты или коины');
+    need(login, 400, 'Укажите логин сотрудника');
+    const worker = (await db.from('users').select('*').eq('login', String(login || '').toLowerCase().trim()).maybeSingle()).data;
+    need(worker, 404, 'Сотрудник не найден');
+
+    if (sum > 0) {
+      await db.rpc('add_money', { p_user: worker.id, p_amount: sum });
+    }
+    if (coinsAwarded > 0) {
+      await db.rpc('add_coins', { p_user: worker.id, p_delta: coinsAwarded, p_reason: 'Выплата за задание/видео: ' + (note || 'выполнено') });
+    }
+    await db.from('audit_log').insert({
+      admin_id: admin.id,
+      action: 'promo_payout',
+      payload: { worker: worker.login, amount: sum, coins: coinsAwarded, note: note || null },
+    });
+    const parts = [];
+    if (sum > 0) parts.push(`${sum} ₽`);
+    if (coinsAwarded > 0) parts.push(`${coinsAwarded} HustlifyCoin`);
+    await notify(worker.tg_id, `Задание выполнено! Вам начислено: ${parts.join(' + ')}${note ? ` (${note})` : ''}`);
+    return { ok: true, worker: worker.full_name, amount: sum, coins: coinsAwarded };
   },
 
   async 'admin.vqueue'() {
@@ -867,6 +940,57 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     if (approve) await db.from('users').update({ plan: 'pro', position: 'Промоутер Pro' }).eq('id', r.user_id);
     await db.from('audit_log').insert({ admin_id: admin.id, action: 'plan_decide', payload: { id, approve } });
     await notify(r.user.tg_id, approve ? 'Вы переведены на тариф Pro. Теперь доступны Pro-задания и повышенная оплата' : `Заявка на Pro отклонена${note ? ': ' + note : ''}`);
+    return { ok: true };
+  },
+
+  async 'admin.purchases_queue'() {
+    const { data } = await db.from('purchases').select('*, user:users(full_name,login,tg_id), item:shop_items(title,price,action_instructions,kind)')
+      .eq('status', 'pending').order('created_at', { ascending: false }).limit(50);
+    return { items: data || [] };
+  },
+
+  async 'admin.purchase_decide'({ user: admin }, { id, approve, note }) {
+    const { data: p } = await db.from('purchases').select('*, user:users(id,full_name,login,tg_id)').eq('id', id).maybeSingle();
+    need(p, 404, 'Заявка не найдена');
+    need(p.status === 'pending', 409, 'Заявка уже рассмотрена');
+    if (approve) {
+      await db.from('purchases').update({ status: 'approved', reviewer_note: note || null, reviewed_at: new Date().toISOString() }).eq('id', id);
+      await notify(p.user?.tg_id, `Ваша покупка «${p.title}» выполнена администратором!${note ? `\nКомментарий: ${note}` : ''}`);
+    } else {
+      await db.rpc('add_coins', { p_user: p.user_id, p_delta: p.price, p_reason: 'Возврат: покупка «' + p.title + '» отклонена' });
+      await db.from('purchases').update({ status: 'rejected', reviewer_note: note || null, reviewed_at: new Date().toISOString() }).eq('id', id);
+      await notify(p.user?.tg_id, `Покупка «${p.title}» отклонена. ${p.price} HustlifyCoin возвращены на ваш баланс.${note ? `\nПричина: ${note}` : ''}`);
+    }
+    await db.from('audit_log').insert({ admin_id: admin.id, action: 'purchase_decide', payload: { purchase_id: id, approve, note } });
+    return { ok: true, approve };
+  },
+
+  async 'admin.shop.save'({ user: admin }, { id, title, price, description, kind, action_instructions, percent, days, stock }) {
+    const t = String(title || '').trim();
+    need(t, 400, 'Укажите название товара');
+    const p = Number(price);
+    need(!isNaN(p) && p >= 0, 400, 'Укажите корректную цену в коинах');
+    const row = {
+      title: t,
+      price: p,
+      description: String(description || ''),
+      kind: ['boost', 'manual', 'custom', 'promo'].includes(kind) ? kind : 'manual',
+      action_instructions: String(action_instructions || ''),
+      payload: (kind === 'boost' || percent) ? { percent: Number(percent) || 3, days: Number(days) || 14 } : { requires_review: true },
+      stock: stock != null && stock !== '' ? Number(stock) : null,
+      is_active: true,
+    };
+    if (id) {
+      await db.from('shop_items').update(row).eq('id', Number(id));
+    } else {
+      await db.from('shop_items').insert(row);
+    }
+    return { ok: true };
+  },
+
+  async 'admin.shop.delete'({ user: admin }, { id }) {
+    need(id, 400, 'Укажите id товара');
+    await db.from('shop_items').delete().eq('id', Number(id));
     return { ok: true };
   },
 

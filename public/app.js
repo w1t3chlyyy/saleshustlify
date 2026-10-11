@@ -661,10 +661,47 @@ pages.me = async () => {
 async function adminView() {
   view(`<div class="screen no-tab">
     <h1 class="title">Администратор</h1><p class="sub">Управление платформой</p>
-    ${segHtml('aseg', S.aseg, [['stats', 'Обзор'], ['queue', 'Проверка'], ['ai', 'HustlifyAI']])}<div id="abody"><div class="spin"></div></div></div>`);
-  try { await ({ stats: aStats, queue: aQueue, ai: aAi })[S.aseg](); } catch (e) { $('#abody').innerHTML = errBlock(e); }
+    ${segHtml('aseg', S.aseg, [['stats', 'Обзор'], ['catalog', 'Товары и кейсы'], ['queue', 'Проверка'], ['ai', 'HustlifyAI']])}<div id="abody"><div class="spin"></div></div></div>`);
+  try { await ({ stats: aStats, catalog: aCatalog, queue: aQueue, ai: aAi })[S.aseg](); } catch (e) { $('#abody').innerHTML = errBlock(e); }
 }
 async function aStats() {
+  const s = await api('admin.stats');
+  $('#abody').innerHTML = `<div class="grid2">
+    <div class="card stat"><b>${s.users}</b><span>Сотрудников</span></div><div class="card stat"><b>${s.trained}</b><span>Прошли обучение</span></div>
+    <div class="card stat"><b>${s.pending_reviews}</b><span>Ждут проверки</span></div><div class="card stat"><b>${s.approved_businesses}</b><span>Принято работ</span></div>
+    <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div>
+    <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит HustlifyAI</span></div>
+    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога</span></div></div>
+
+    <div class="card" style="margin-top:16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <b style="font-size:14px">Товары и кейсы (${(s.products_list || []).length} поз., ${(s.shop_items_list || []).length} в магазине)</b>
+        <div class="mut small">Все товары и витрина свернуты во вкладку</div>
+      </div>
+      <button class="btn sm ghost" data-act="openCatalogTab">Открыть</button>
+    </div>
+
+    <h2 class="h2">Инструкция по базе (Telegraph)</h2>
+    <label class="field"><span>Ссылка на статью («Как работать по базе?»)</span><input id="set_guide" placeholder="https://telegra.ph/..." value="${esc(s.guide_url || '')}"></label>
+    <button class="btn sm" data-act="guideSave" style="margin-bottom:20px">Сохранить ссылку на Telegraph</button>
+
+    <h2 class="h2">Записать продажу (Продающие)</h2>
+    <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none" placeholder="логин продающего"></label>
+    <label class="field"><span>ID бизнеса (вместо логина)</span><input id="s_biz" inputmode="numeric" placeholder="например: 12"></label>
+    <label class="field"><span>Сумма сделки, ${CUR}</span><input id="s_sum" inputmode="decimal" placeholder="например: 35000"></label>
+    <label class="field"><span>Коины за продажу (HustlifyCoin)</span><input id="s_coins" type="number" inputmode="numeric" placeholder="например: 20"></label>
+    <button class="btn" data-act="saleSubmit" style="margin-bottom:24px">Начислить процент и коины</button>
+
+    <h2 class="h2">Записать задание / видео (Продвигающие)</h2>
+    <p class="mut small" style="margin-bottom:8px">Выплата и коины за выполненный ролик или задание продвижения</p>
+    <label class="field"><span>Логин сотрудника (продвигающего)</span><input id="pv_login" autocapitalize="none" placeholder="логин продвигающего"></label>
+    <label class="field"><span>Тема задания / ролика или ссылка</span><input id="pv_note" placeholder="например: Reels про кофейню / ссылка"></label>
+    <label class="field"><span>Сумма к выплате, ${CUR}</span><input id="pv_sum" inputmode="decimal" placeholder="например: 500"></label>
+    <label class="field"><span>Коины за задание (HustlifyCoin)</span><input id="pv_coins" type="number" inputmode="numeric" placeholder="например: 15"></label>
+    <button class="btn" data-act="promoPayoutSubmit">Выплатить за видео и начислить коины</button>`;
+}
+
+async function aCatalog() {
   const s = await api('admin.stats');
   const catList = (s.products_list || []).map(p => `
     <div class="row" style="margin-bottom:6px">
@@ -675,32 +712,34 @@ async function aStats() {
       <button class="btn ghost sm" data-act="catDel" data-id="${p.id}" style="color:#ef4444;padding:4px 8px">Удалить</button>
     </div>`).join('');
 
-  $('#abody').innerHTML = `<div class="grid2">
-    <div class="card stat"><b>${s.users}</b><span>Сотрудников</span></div><div class="card stat"><b>${s.trained}</b><span>Прошли обучение</span></div>
-    <div class="card stat"><b>${s.pending_reviews}</b><span>Ждут проверки</span></div><div class="card stat"><b>${s.approved_businesses}</b><span>Принято работ</span></div>
-    <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div>
-    <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит HustlifyAI</span></div>
-    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога</span></div></div>
+  const shopList = (s.shop_items_list || []).map(i => `
+    <div class="row" style="margin-bottom:6px">
+      <div class="grow">
+        <div class="t">${esc(i.title)} <span class="pill sm" style="font-size:11px">${i.kind === 'boost' ? 'Буст' : i.kind === 'promo' ? 'Промокод' : 'Услуга / Проверка'}</span></div>
+        <div class="d">${i.price} HC${i.action_instructions ? ' · ' + esc(i.action_instructions) : (i.description ? ' · ' + esc(i.description) : '')}</div>
+      </div>
+      <button class="btn ghost sm" data-act="shopDel" data-id="${i.id}" style="color:#ef4444;padding:4px 8px">Удалить</button>
+    </div>`).join('');
 
-    <h2 class="h2">Инструкция по базе (Telegraph)</h2>
-    <label class="field"><span>Ссылка на статью («Как работать по базе?»)</span><input id="set_guide" placeholder="https://telegra.ph/..." value="${esc(s.guide_url || '')}"></label>
-    <button class="btn sm" data-act="guideSave">Сохранить ссылку на Telegraph</button>
-
+  $('#abody').innerHTML = `
     <h2 class="h2">Каталог и кейсы компании (${(s.products_list || []).length})</h2>
+    <p class="mut small" style="margin-bottom:12px">Позиции компании, по которым сотрудники продают услуги и сдают тесты.</p>
     ${catList ? `<div class="list" style="margin-bottom:12px">${catList}</div>` : '<p class="mut small">Каталог пуст</p>'}
-    <div style="display:flex;gap:8px;margin-bottom:18px">
-      <button class="btn sm ghost" data-act="catAddSheet">+ Добавить позицию</button>
+    <div style="display:flex;gap:8px;margin-bottom:24px">
+      <button class="btn sm" data-act="catAddSheet">+ Добавить позицию</button>
       <button class="btn sm ghost" data-act="quizClear">Очистить кэш тестов</button>
     </div>
 
-    <h2 class="h2">Записать продажу</h2>
-    <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none"></label>
-    <label class="field"><span>ID бизнеса (вместо логина)</span><input id="s_biz" inputmode="numeric"></label>
-    <label class="field"><span>Сумма покупки, ${CUR}</span><input id="s_sum" inputmode="decimal"></label>
-    <button class="btn" data-act="saleSubmit">Начислить процент</button>`;
+    <h2 class="h2">Витрина магазина за коины (${(s.shop_items_list || []).length})</h2>
+    <p class="mut small" style="margin-bottom:12px">Товары, бусты и услуги для покупки за HustlifyCoin. Действия при покупке задаются здесь или через HustlifyAI.</p>
+    ${shopList ? `<div class="list" style="margin-bottom:12px">${shopList}</div>` : '<p class="mut small">Витрина пуста</p>'}
+    <div style="display:flex;gap:8px;margin-bottom:18px">
+      <button class="btn sm" data-act="shopAddSheet">+ Добавить товар в магазин</button>
+    </div>`;
 }
+
 async function aQueue() {
-  const [d, v, p] = await Promise.all([api('admin.queue'), api('admin.vqueue'), api('admin.plans')]);
+  const [d, v, p, pur] = await Promise.all([api('admin.queue'), api('admin.vqueue'), api('admin.plans'), api('admin.purchases_queue')]);
   const sec = (t, a) => a.length ? `<h2 class="h2">${t}</h2>` + a.join('') : '';
   const works = d.items.map(a => `<div class="biz"><h3>${esc(a.business?.name)}</h3>
     <div class="meta">${esc(a.user?.full_name)}, @${esc(a.user?.login)}</div>
@@ -716,9 +755,14 @@ async function aQueue() {
     ${r.note ? `<div class="note">${esc(r.note)}</div>` : ''}
     ${safeUrl(r.portfolio_url) ? linkEl(r.portfolio_url, 'Открыть пример монтажа', 'phone') : ''}
     <div class="foot"><button class="btn ghost sm" data-act="planReject" data-id="${r.id}">Отклонить</button><button class="btn sm" data-act="planApprove" data-id="${r.id}">Перевести на Pro</button></div></div>`);
-  $('#abody').innerHTML = works.length || vids.length || plans.length
-    ? sec('Работы по базе', works) + sec('Видео', vids) + sec('Переход на Pro', plans)
-    : `<div class="empty"><b>Очередь пуста</b>Новые работы появятся здесь.</div>`;
+  const purs = (pur.items || []).map(o => `<div class="biz"><h3>${esc(o.title)}</h3>
+    <div class="meta">${esc(o.user?.full_name)}, @${esc(o.user?.login)} · <b>${o.price} HC</b></div>
+    ${o.instructions ? `<div class="note"><b>Инструкция:</b> ${esc(o.instructions)}</div>` : ''}
+    <div class="foot"><button class="btn ghost sm" data-act="purReject" data-id="${o.id}">Отклонить и вернуть коины</button><button class="btn sm" data-act="purApprove" data-id="${o.id}">Выполнено</button></div></div>`);
+
+  $('#abody').innerHTML = works.length || vids.length || plans.length || purs.length
+    ? sec('Работы по базе', works) + sec('Видео', vids) + sec('Переход на Pro', plans) + sec('Покупки в магазине (требуют вмешательства)', purs)
+    : `<div class="empty"><b>Очередь пуста</b>Новые заявки появятся здесь.</div>`;
 }
 function aAi() {
   const ch = S.adminChat, imgs = S.aiImages || [];
@@ -853,10 +897,12 @@ const A = {
   async buy(d) {
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(`Купить «${d.t}» за ${d.p} коинов?`, r)) : confirm(`Купить «${d.t}» за ${d.p} коинов?`);
     if (!ok) return;
-    const r = await api('shop.buy', { item_id: Number(d.id) });
-    sheet(`<h3>Готово</h3>${r.result.code ? `<p>Ваш промокод${r.result.discount_percent ? ` на скидку ${r.result.discount_percent}%` : ''}:</p><div class="card" style="font-family:var(--fd);font-weight:600;font-size:20px;text-align:center;margin-bottom:16px">${esc(r.result.code)}</div><button class="btn" data-act="copy" data-t="${esc(r.result.code)}">Скопировать</button>`
-      : r.result.until ? `<p>Повышенная ставка уже действует.</p><button class="btn" data-act="closeSheet">Отлично</button>` : `<p>Заявка отправлена руководителю, с вами свяжутся.</p><button class="btn" data-act="closeSheet">Понятно</button>`}`);
-    pages.shop();
+    try {
+      const r = await api('shop.buy', { item_id: Number(d.id) });
+      sheet(`<h3>Готово</h3>${r.result.code ? `<p>Ваш промокод${r.result.discount_percent ? ` на скидку ${r.result.discount_percent}%` : ''}:</p><div class="card" style="font-family:var(--fd);font-weight:600;font-size:20px;text-align:center;margin-bottom:16px">${esc(r.result.code)}</div><button class="btn" data-act="copy" data-t="${esc(r.result.code)}">Скопировать</button>`
+        : r.result.until ? `<p>Повышенная ставка (+${r.result.percent}%) уже действует.</p><button class="btn" data-act="closeSheet">Отлично</button>` : `<p>Заявка отправлена администратору в раздел «Проверка». Вам придёт уведомление в бота.</p><button class="btn" data-act="closeSheet">Понятно</button>`}`);
+      pages.shop();
+    } catch (e) { toast(e.message); }
   },
   async copy(d) { try { await navigator.clipboard.writeText(d.t); toast('Скопировано'); } catch { toast(d.t); } },
   closeSheet,
@@ -866,8 +912,22 @@ const A = {
   },
   async rejectSend(d) { await api('admin.review', { id: Number(d.id), approve: false, note: val('r_note') }); closeSheet(); toast('Отклонено'); aQueue(); },
   async saleSubmit() {
-    const r = await api('admin.sale', { login: val('s_login') || undefined, business_id: val('s_biz') ? Number(val('s_biz')) : undefined, amount: val('s_sum') });
-    toast(`${r.worker}: +${money(r.payout)} (${r.percent}%)`); aStats();
+    const coins = val('s_coins') ? Number(val('s_coins')) : 0;
+    const r = await api('admin.sale', { login: val('s_login') || undefined, business_id: val('s_biz') ? Number(val('s_biz')) : undefined, amount: val('s_sum'), coins });
+    toast(`${r.worker}: +${money(r.payout)} (${r.percent}%)${r.coins ? ` + ${r.coins} HC` : ''}`); aStats();
+  },
+  async promoPayoutSubmit() {
+    const login = val('pv_login');
+    if (!login) return toast('Укажите логин сотрудника');
+    const sum = Number(val('pv_sum')) || 0;
+    const coins = Number(val('pv_coins')) || 0;
+    if (sum <= 0 && coins <= 0) return toast('Укажите сумму выплаты или коины');
+    const r = await api('admin.promo_payout', { login, amount: sum, coins, note: val('pv_note') });
+    toast(`${r.worker}: ${sum ? '+' + money(sum) : ''}${coins ? ` + ${coins} HC` : ''}`); aStats();
+  },
+  openCatalogTab() {
+    S.aseg = 'catalog';
+    adminView();
   },
   aiSend: d => aiSend(d.t),
   aiPick: () => $('#ai_file')?.click(),
@@ -897,13 +957,58 @@ const A = {
     const name = val('cp_name'), price = Number(val('cp_price'));
     if (!name || isNaN(price)) return toast('Укажите название и цену');
     await api('admin.catalog.save', { name, price, section: $('#cp_sec').value, description: val('cp_desc') });
-    toast('Добавлено в каталог. Тесты синхронизированы'); closeSheet(); aStats();
+    toast('Добавлено в каталог. Тесты синхронизированы'); closeSheet(); aCatalog();
   },
   async catDel(d) {
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm('Удалить позицию из каталога? Связанные вопросы тестов будут удалены.', r)) : confirm('Удалить позицию из каталога? Связанные вопросы тестов будут удалены.');
     if (!ok) return;
     await api('admin.catalog.delete', { id: Number(d.id) });
-    toast('Удалено. Тесты обновлены'); aStats();
+    toast('Удалено. Тесты обновлены'); aCatalog();
+  },
+  shopAddSheet() {
+    sheet(`<h3>Новый товар в магазин за коины</h3>
+      <label class="field"><span>Название</span><input id="sh_title" placeholder="Например: Личный созвон с наставником"></label>
+      <label class="field"><span>Цена (HustlifyCoin)</span><input id="sh_price" inputmode="numeric" placeholder="150"></label>
+      <label class="field"><span>Тип товара</span><select id="sh_kind"><option value="manual">Услуга / Требует вмешательства</option><option value="boost">Буст процента к ставке</option><option value="promo">Промокод</option></select></label>
+      <div id="sh_boost_box" style="display:none">
+        <label class="field"><span>Прибавка к ставке (%)</span><input id="sh_pc" placeholder="3" inputmode="numeric"></label>
+        <label class="field"><span>Срок буста (дней)</span><input id="sh_days" placeholder="14" inputmode="numeric"></label>
+      </div>
+      <label class="field"><span>Инструкция при покупке (для бота и AI)</span><textarea id="sh_instr" placeholder="Что делать при покупке (например: прибавлять +3% к ставке, а продвигающим сообщать что ставка фиксированная; или заявка в Проверку)"></textarea></label>
+      <button class="btn" data-act="shopAddSave">Сохранить товар</button>`);
+    $('#sh_kind')?.addEventListener('change', e => {
+      const isB = e.target.value === 'boost';
+      if ($('#sh_boost_box')) $('#sh_boost_box').style.display = isB ? 'block' : 'none';
+    });
+  },
+  async shopAddSave() {
+    const title = val('sh_title'), price = Number(val('sh_price'));
+    if (!title || isNaN(price)) return toast('Укажите название и цену в коинах');
+    const kind = $('#sh_kind').value;
+    await api('admin.shop.save', {
+      title, price, kind,
+      action_instructions: val('sh_instr'),
+      percent: val('sh_pc') ? Number(val('sh_pc')) : undefined,
+      days: val('sh_days') ? Number(val('sh_days')) : undefined,
+    });
+    toast('Товар добавлен в магазин'); closeSheet(); aCatalog();
+  },
+  async shopDel(d) {
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm('Удалить товар из магазина?', r)) : confirm('Удалить товар из магазина?');
+    if (!ok) return;
+    await api('admin.shop.delete', { id: Number(d.id) });
+    toast('Товар удален из магазина'); aCatalog();
+  },
+  async purApprove(d) {
+    await api('admin.purchase_decide', { id: Number(d.id), approve: true });
+    toast('Выполнено, сотрудник уведомлен'); aQueue();
+  },
+  purReject(d) {
+    sheet(`<h3>Причина отклонения</h3><p class="mut small">Коины будут автоматически возвращены на баланс сотрудника.</p><label class="field"><textarea id="pr_note" placeholder="Причина отказа"></textarea></label><button class="btn" data-act="purRejectSend" data-id="${d.id}">Отклонить и вернуть коины</button>`);
+  },
+  async purRejectSend(d) {
+    await api('admin.purchase_decide', { id: Number(d.id), approve: false, note: val('pr_note') });
+    closeSheet(); toast('Отклонено, коины возвращены'); aQueue();
   },
   async quizClear() {
     await api('admin.quiz.clear');
