@@ -5,6 +5,7 @@
   "description": "Hustlify: Telegram bot + mini app for the sales team",
   "scripts": {
     "dev": "node server.js",
+    "lint": "node -c server.js api/app.js api/bot.js api/cron.js lib/admin.js lib/db.js lib/places.js lib/qwen.js lib/security.js lib/telegram.js public/app.js",
     "build": "echo 'Static build complete'",
     "start": "node server.js"
   },

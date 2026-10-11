@@ -277,8 +277,9 @@ function bizSheet(d) {
     ${b.info ? `<div class="note">${esc(b.info)}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
     ${rows.length ? `<div class="list" style="margin:14px 0">${rows.join('')}</div>` : ''}
-    <div style="display:flex;gap:10px;margin:14px 0">
-      ${linkEl(m.yandex, 'Яндекс Карты', 'btn ghost sm')}${linkEl(m.gis, '2ГИС', 'btn ghost sm')}
+    <div style="display:flex;flex-direction:column;gap:8px;margin:14px 0">
+      ${linkEl(m.yandex, 'Открыть в Яндекс Картах (карточка бизнеса)', 'btn ghost sm')}
+      ${m.gis ? linkEl(m.gis, 'Открыть в 2ГИС', 'btn ghost sm') : ''}
     </div>
     ${action}`);
 }
@@ -555,30 +556,43 @@ pages.work = async () => {
 };
 
 function bizCard(a) {
-  const b = a.business || {};
+  const b = a.business || {}, m = b.maps || {};
   S.assign[a.id] = a;
   return `<div class="biz" data-act="bizSheet" data-id="${a.id}" style="cursor:pointer">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h3>${esc(b.name)}</h3><span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span></div>
     ${b.category ? `<div class="meta">${esc(b.category)}</div>` : ''}
+    ${b.address ? `<div class="meta small mut">${esc(b.address)}</div>` : ''}
     ${a.status === 'in_work' && a.taken_at ? `<div class="meta">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
-    ${a.status === 'assigned' ? `<div class="foot"><span class="mut small">Подробности по нажатию</span><button class="btn sm" data-act="take" data-id="${a.id}">Взять в работу</button></div>` : ''}
+    <div class="foot" style="margin-top:10px;display:flex;gap:8px;align-items:center;justify-content:space-between">
+      ${m.yandex ? `<a class="btn ghost sm" href="${esc(m.yandex)}" data-act="openUrl" data-u="${esc(m.yandex)}" onclick="event.stopPropagation()">Найти на карте</a>` : ''}
+      ${a.status === 'assigned' ? `<button class="btn sm" data-act="take" data-id="${a.id}">Взять в работу</button>` : `<span class="mut small">Подробнее</span>`}
+    </div>
   </div>`;
 }
 
 async function wToday() {
   const d = await api('base.today');
-  const picker = `<div class="card" style="margin-bottom:16px">
+  S.guideUrl = d.guide_url || '';
+  const guideBtn = `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(d.guide_url || S.guideUrl || '')}">${I.book}Как работать по базе?</button></div>`;
+  const picker = `<div class="card" style="margin-bottom:12px">
     <b style="font-family:var(--fd)">Выберите город</b>
-    <p class="mut small" style="margin:6px 0 14px">Получите ${d.limit} бизнесов без сайта. Новая подборка раз в сутки. Взятые в работу остаются с вами, пока вы не отправите результат.</p>
+    <p class="mut small" style="margin:6px 0 14px">Получите ${d.limit} проверенных бизнесов без сайта. База автоматически обновляется и верифицируется. Взятые в работу остаются с вами до отправки результата.</p>
     <label class="field"><input id="city" placeholder="Например, Казань" value="${esc(d.city)}" data-enter="getBase"></label>
-    <button class="btn" data-act="getBase">Получить подборку</button></div>`;
+    <button class="btn" data-act="getBase">Получить подборку</button></div>` + guideBtn;
   if (!d.items.length) return picker;
   const order = { in_work: 0, rejected: 1, assigned: 2, submitted: 3, approved: 4 };
   const items = [...d.items].sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
   const working = items.filter(a => a.status === 'in_work').length;
   const sent = items.filter(a => ['submitted', 'approved'].includes(a.status)).length;
-  return (d.has_today ? `<p class="mut small" style="margin:0 0 14px">Город: ${esc(d.city)}. В работе ${working}, отправлено ${sent}.</p>` : picker) + items.map(bizCard).join('');
+  const infoCard = `<div class="card" style="margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <b style="font-family:var(--fd)">База бизнесов без сайта</b>
+      <span class="pill sm">${esc(d.city || 'Выбрано')}</span>
+    </div>
+    <p class="mut small" style="margin:0">В работе: <b>${working}</b>, отправлено на проверку: <b>${sent}</b>. Прямой переход открывает карточку заведения в картах.</p>
+  </div>` + guideBtn;
+  return (d.has_today ? infoCard : picker) + items.map(bizCard).join('');
 }
 async function wHistory() {
   const d = await api('base.history');
@@ -652,12 +666,33 @@ async function adminView() {
 }
 async function aStats() {
   const s = await api('admin.stats');
+  const catList = (s.products_list || []).map(p => `
+    <div class="row" style="margin-bottom:6px">
+      <div class="grow">
+        <div class="t">${esc(p.name)} <span class="pill sm" style="font-size:11px">${p.section === 'case' ? 'Кейс' : 'Товар'}</span></div>
+        <div class="d">${money(p.price)}${p.description ? ' · ' + esc(p.description) : ''}</div>
+      </div>
+      <button class="btn ghost sm" data-act="catDel" data-id="${p.id}" style="color:#ef4444;padding:4px 8px">Удалить</button>
+    </div>`).join('');
+
   $('#abody').innerHTML = `<div class="grid2">
     <div class="card stat"><b>${s.users}</b><span>Сотрудников</span></div><div class="card stat"><b>${s.trained}</b><span>Прошли обучение</span></div>
     <div class="card stat"><b>${s.pending_reviews}</b><span>Ждут проверки</span></div><div class="card stat"><b>${s.approved_businesses}</b><span>Принято работ</span></div>
     <div class="card stat"><b>${money(s.sales_amount)}</b><span>Продажи</span></div><div class="card stat"><b>${money(s.payouts_total)}</b><span>Выплаты</span></div>
     <div class="card stat"><b>${s.kb_products} / ${s.kb_cases}</b><span>Товаров / кейсов видит HustlifyAI</span></div>
-    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога передаётся</span></div></div>
+    <div class="card stat"><b>${s.kb_sent} из ${s.kb_full}</b><span>Символов каталога</span></div></div>
+
+    <h2 class="h2">Инструкция по базе (Telegraph)</h2>
+    <label class="field"><span>Ссылка на статью («Как работать по базе?»)</span><input id="set_guide" placeholder="https://telegra.ph/..." value="${esc(s.guide_url || '')}"></label>
+    <button class="btn sm" data-act="guideSave">Сохранить ссылку на Telegraph</button>
+
+    <h2 class="h2">Каталог и кейсы компании (${(s.products_list || []).length})</h2>
+    ${catList ? `<div class="list" style="margin-bottom:12px">${catList}</div>` : '<p class="mut small">Каталог пуст</p>'}
+    <div style="display:flex;gap:8px;margin-bottom:18px">
+      <button class="btn sm ghost" data-act="catAddSheet">+ Добавить позицию</button>
+      <button class="btn sm ghost" data-act="quizClear">Очистить кэш тестов</button>
+    </div>
+
     <h2 class="h2">Записать продажу</h2>
     <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none"></label>
     <label class="field"><span>ID бизнеса (вместо логина)</span><input id="s_biz" inputmode="numeric"></label>
@@ -838,6 +873,42 @@ const A = {
   aiPick: () => $('#ai_file')?.click(),
   aiImgDel: d => { S.aiImages.splice(Number(d.i), 1); const t = val('ai'); aAi(); $('#ai').value = t; },
   openUrl: d => { const u = safeUrl(d.u); if (!u) return; if (tg?.openLink) tg.openLink(u); else window.open(u, '_blank'); },
+  openGuide(d) {
+    const u = safeUrl(d.u || S.guideUrl || 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
+    if (!u) return toast('Ссылка на Telegraph пока не указана');
+    if (tg?.openLink) tg.openLink(u); else window.open(u, '_blank');
+  },
+  async guideSave() {
+    const u = val('set_guide');
+    if (!u) return toast('Укажите ссылку на Telegraph');
+    await api('admin.setting.save', { key: 'base_guide_url', value: u });
+    S.guideUrl = u;
+    toast('Ссылка на Telegraph сохранена в базе данных'); aStats();
+  },
+  catAddSheet() {
+    sheet(`<h3>Новая позиция в каталоге</h3>
+      <label class="field"><span>Тип</span><select id="cp_sec"><option value="catalog">Товар / Услуга</option><option value="case">Кейс</option></select></label>
+      <label class="field"><span>Название</span><input id="cp_name" placeholder="Например: Лендинг под ключ"></label>
+      <label class="field"><span>Цена (${CUR})</span><input id="cp_price" inputmode="numeric" placeholder="25000"></label>
+      <label class="field"><span>Описание</span><textarea id="cp_desc" placeholder="Краткое описание"></textarea></label>
+      <button class="btn" data-act="catAddSave">Добавить</button>`);
+  },
+  async catAddSave() {
+    const name = val('cp_name'), price = Number(val('cp_price'));
+    if (!name || isNaN(price)) return toast('Укажите название и цену');
+    await api('admin.catalog.save', { name, price, section: $('#cp_sec').value, description: val('cp_desc') });
+    toast('Добавлено в каталог. Тесты синхронизированы'); closeSheet(); aStats();
+  },
+  async catDel(d) {
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm('Удалить позицию из каталога? Связанные вопросы тестов будут удалены.', r)) : confirm('Удалить позицию из каталога? Связанные вопросы тестов будут удалены.');
+    if (!ok) return;
+    await api('admin.catalog.delete', { id: Number(d.id) });
+    toast('Удалено. Тесты обновлены'); aStats();
+  },
+  async quizClear() {
+    await api('admin.quiz.clear');
+    toast('Кэш тестов очищен. Вопросы перегенерируются заново.');
+  },
   bizSheet, taskSheet, planSheet,
   testVideo: () => open('testvideo', testVideo),
   async take(d) { await api('base.take', { assignment_id: Number(d.id) }); toast('Взято в работу'); closeSheet(); pages.work(); },
@@ -890,7 +961,7 @@ document.addEventListener('change', async e => {
 (async function boot() {
   try { tg?.ready(); tg?.expand(); tg?.disableVerticalSwipes?.(); } catch {}
   applyTheme(); tg?.onEvent?.('themeChanged', applyTheme);
-  if (!tg?.initData && location.hostname !== 'localhost' && !location.hostname.endsWith('.run.app')) {
+  if (!tg?.initData && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' && !location.hostname.endsWith('.run.app') && !location.hostname.includes('google') && !location.hostname.includes('ais-')) {
     view(`<div class="screen no-tab"><div class="brand">Hustlify</div><div class="empty"><b>Откройте в Telegram</b>Приложение работает только внутри бота.</div></div>`, { back: false });
     return;
   }

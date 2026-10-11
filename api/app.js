@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
-const { refillCity } = require('../lib/places');
+const { refillCity, buildMapLinks } = require('../lib/places');
 const { chatWithAdminAgent, stats, PRODUCTS } = require('../lib/admin');
 
 // ───────── helpers
@@ -25,15 +25,8 @@ async function notifyAdmins(text) {
   for (const a of data || []) await notify(a.tg_id, text);
 }
 
-// Ссылки на карты: по координатам, а если их нет, поиском по названию и городу
-const mapLinks = b => {
-  const q = encodeURIComponent([b.name, b.city].filter(Boolean).join(' '));
-  const has = b.lat != null && b.lon != null;
-  return {
-    yandex: has ? `https://yandex.ru/maps/?ll=${b.lon},${b.lat}&z=17&pt=${b.lon},${b.lat},pm2rdm` : `https://yandex.ru/maps/?text=${q}`,
-    gis: has ? `https://2gis.ru/search/${encodeURIComponent(b.name)}?m=${b.lon},${b.lat}/17` : `https://2gis.ru/search/${q}`,
-  };
-};
+// Прямые ссылки на карточку бизнеса в Яндекс Картах и 2ГИС (без привязки к IP)
+const mapLinks = b => buildMapLinks(b);
 
 async function percentFor(u) {
   const since = new Date(Date.now() - 30 * 864e5).toISOString();
@@ -53,13 +46,18 @@ async function claim(userId, city, day, n) {
   return data?.length || 0;
 }
 
-const assignmentView = a => ({
-  id: a.id, status: a.status, reviewer_note: a.reviewer_note, proof_text: a.proof_text, day: a.day, taken_at: a.taken_at,
-  business: a.business ? {
-    name: a.business.name, category: a.business.category, address: a.business.address, phone: a.business.phone,
-    info: a.business.info, contacts: a.business.contacts || {}, maps: mapLinks(a.business),
-  } : null,
-});
+const assignmentView = a => {
+  const b = a.business || {};
+  const city = b.city || a.city || '';
+  const bWithCity = { ...b, city };
+  return {
+    id: a.id, status: a.status, reviewer_note: a.reviewer_note, proof_text: a.proof_text, day: a.day, taken_at: a.taken_at,
+    business: a.business ? {
+      id: b.id, name: b.name, city: city, category: b.category, address: b.address, phone: b.phone,
+      info: b.info, contacts: b.contacts || {}, maps: mapLinks(bWithCity),
+    } : null,
+  };
+};
 
 // Множители Pro и оплата за видео-задание
 async function multipliers(user) {
@@ -96,11 +94,17 @@ const practiceMaxTurns = async () => Math.min(Number(await setting('practice_max
 async function loadKnowledge() {
   const { data, error } = await kb.from(PRODUCTS).select('*').limit(300);
   if (error) console.error('knowledge base:', error.message);
-  const rows = data || [];
+  const rows = (data || []).filter(r => r && r.is_active !== false);
   return {
     products: rows.filter(r => r.section !== 'case'),
     cases: rows.filter(r => r.section === 'case'),
   };
+}
+
+function getCatalogSignature(kbData) {
+  const pList = (kbData?.products || []).map(p => `${p.id}:${p.name}:${p.price}`).sort().join(';');
+  const cList = (kbData?.cases || []).map(c => `${c.id}:${c.name}:${c.price}`).sort().join(';');
+  return pList + '||' + cList;
 }
 
 async function lessonsFor(user) {
@@ -136,11 +140,25 @@ const EDIT_SURVEY = [
   { q: 'Какой у вас опыт в монтаже коротких роликов (Reels, Shorts, TikTok)?', options: ['Меньше 6 месяцев', 'От 6 месяцев до 1 года', 'От 1 до 2 лет', 'Более 2 лет'], correct: 0, any: true, explain: 'Ответ сохранён в вашей анкете.' },
 ];
 
-// Банк вопросов раздела: генерируется один раз, каждому выдаётся выборка без повторов
+// Банк вопросов раздела: генерируется с учетом текущей версии каталога и материалов
 async function quizQuestions(user, lesson, variant, kb, opts) {
-  const hash = crypto.createHash('md5').update(lesson.title + '\n' + String(lesson.body || '')).digest('hex');
+  const catSig = getCatalogSignature(kb);
+  const hash = crypto.createHash('md5').update(lesson.title + '\n' + String(lesson.body || '') + '\n' + catSig).digest('hex');
   const { data: row } = await db.from('quiz_bank').select('*').eq('lesson_id', lesson.id).eq('variant', variant).maybeSingle();
   let bank = row && row.body_hash === hash ? (row.questions || []) : [];
+
+  // Исключаем вопросы по удаленным товарам/кейсам
+  const allActiveTitles = [
+    ...(kb.products || []).map(p => p.name.trim().toLowerCase()),
+    ...(kb.cases || []).map(c => c.name.trim().toLowerCase()),
+  ];
+
+  bank = bank.filter(q => {
+    const text = (q.q + ' ' + (q.options || []).join(' ')).toLowerCase();
+    if (!/цена|стоимость|тариф|руб|пакет|кейс/i.test(text)) return true;
+    return allActiveTitles.some(name => text.includes(name));
+  });
+
   const save = () => db.from('quiz_bank').upsert({ lesson_id: lesson.id, variant, body_hash: hash, questions: bank }, { onConflict: 'lesson_id,variant' });
 
   if (!bank.length) { bank = await qwen.genQuiz(lesson, [], kb, { ...opts, count: BANK_SIZE }); await save(); }
@@ -475,16 +493,18 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     let list = await load();
     const c = String(city || '').trim().slice(0, 60);
     if (!list.some(a => a.day === day) && c) {
+      try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
       let got = await claim(user.id, c, day, limit);
       if (got < limit) {
-        try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
+        try { await refillCity(c); } catch (e) { console.error('refill retry', e.message); }
         got += await claim(user.id, c, day, limit - got);
       }
       await db.from('users').update({ city: c }).eq('id', user.id);
       list = await load();
       need(list.some(a => a.day === day), 404, 'В этом городе пока нет подходящих бизнесов без сайта. Попробуйте другой город');
     }
-    return { items: list.map(assignmentView), limit, city: user.city || '', has_today: list.some(a => a.day === day) };
+    const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
+    return { items: list.map(assignmentView), limit, city: user.city || '', has_today: list.some(a => a.day === day), guide_url: guideUrl };
   },
 
   async 'base.take'({ user }, { assignment_id }) {
@@ -692,7 +712,62 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const k = await loadKnowledge();
     const sent = qwen.compact(k.products, 5000).length + qwen.compact(k.cases, 3000).length;
     const full = qwen.compact(k.products, 1e9).length + qwen.compact(k.cases, 1e9).length;
-    return { ...(await stats()), kb_products: k.products.length, kb_cases: k.cases.length, kb_sent: sent, kb_full: full };
+    const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
+    return {
+      ...(await stats()),
+      kb_products: k.products.length,
+      kb_cases: k.cases.length,
+      kb_sent: sent,
+      kb_full: full,
+      guide_url: guideUrl,
+      products_list: [...k.products, ...k.cases],
+    };
+  },
+
+  async 'admin.setting.save'({ user: admin }, { key, value }) {
+    need(key, 400, 'Укажите ключ настройки');
+    await db.from('settings').upsert({ key: String(key).trim(), value });
+    bustSettings();
+    return { ok: true, key, value };
+  },
+
+  async 'admin.catalog.save'({ user: admin }, { id, name, price, old_price, description, section }) {
+    const n = String(name || '').trim();
+    need(n, 400, 'Укажите название позиции');
+    const p = Number(price);
+    need(!isNaN(p) && p >= 0, 400, 'Укажите корректную цену');
+    const row = {
+      name: n,
+      price: p,
+      old_price: old_price ? Number(old_price) : null,
+      description: String(description || ''),
+      section: section === 'case' ? 'case' : 'catalog',
+      is_active: true,
+    };
+    if (id) {
+      await kb.from(PRODUCTS).update(row).eq('id', Number(id));
+    } else {
+      await kb.from(PRODUCTS).insert(row);
+    }
+    await db.from('quiz_bank').delete().neq('id', 0);
+    await db.from('quizzes').delete().is('finished_at', null);
+    bustSettings();
+    return { ok: true };
+  },
+
+  async 'admin.catalog.delete'({ user: admin }, { id }) {
+    need(id, 400, 'Укажите id позиции');
+    await kb.from(PRODUCTS).delete().eq('id', Number(id));
+    await db.from('quiz_bank').delete().neq('id', 0);
+    await db.from('quizzes').delete().is('finished_at', null);
+    bustSettings();
+    return { ok: true };
+  },
+
+  async 'admin.quiz.clear'({ user: admin }) {
+    await db.from('quiz_bank').delete().neq('id', 0);
+    await db.from('quizzes').delete().is('finished_at', null);
+    return { ok: true };
   },
 
   async 'admin.queue'() {
