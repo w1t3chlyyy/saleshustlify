@@ -43,15 +43,18 @@ const drop = async keys => { await db.from('settings').delete().in('key', keys);
 async function sendWelcome(chat_id) {
   const text = await setting('welcome_text', DEFAULT_WELCOME);
   const photo = await setting('welcome_photo', null);
-  const reply_markup = { inline_keyboard: [[{ text: 'Открыть Hustlify', web_app: { url: process.env.APP_URL } }]] };
-  const base = { chat_id, parse_mode: 'HTML' };
+  const appUrl = (process.env.APP_URL || '').trim();
+  const reply_markup = appUrl.startsWith('https://')
+    ? { inline_keyboard: [[{ text: 'Открыть Hustlify', web_app: { url: appUrl } }]] }
+    : undefined;
+  const base = { chat_id, parse_mode: 'HTML', ...(reply_markup ? { reply_markup } : {}) };
   let r;
-  if (photo && text.length <= 1024) r = await tg('sendPhoto', { ...base, photo, caption: text, reply_markup });
-  else if (photo) { await tg('sendPhoto', { chat_id, photo }); r = await tg('sendMessage', { ...base, text, reply_markup }); }
-  else r = await tg('sendMessage', { ...base, text, reply_markup });
+  if (photo && text.length <= 1024) r = await tg('sendPhoto', { ...base, photo, caption: text });
+  else if (photo) { await tg('sendPhoto', { chat_id, photo }); r = await tg('sendMessage', { ...base, text }); }
+  else r = await tg('sendMessage', { ...base, text });
   if (!r?.ok) {
     console.error('welcome failed', r);
-    await tg('sendMessage', { chat_id, text: DEFAULT_WELCOME, reply_markup });
+    await tg('sendMessage', { chat_id, text: DEFAULT_WELCOME, ...(reply_markup ? { reply_markup } : {}) });
   }
 }
 

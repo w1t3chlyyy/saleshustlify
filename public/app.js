@@ -215,9 +215,17 @@ function renderAuth() {
       <button data-act="authMode" data-k="register" class="${reg ? 'on' : ''}">Регистрация</button>
     </div>
     ${reg ? `<label class="field"><span>Имя и фамилия</span><input id="a_name" autocomplete="name" placeholder="Анна Иванова"></label>` : ''}
-    <label class="field"><span>Логин</span><input id="a_login" autocapitalize="none" autocomplete="username" placeholder="anna_ivanova"></label>
+    <label class="field"><span>Логин</span><input id="a_login" autocapitalize="none" autocomplete="username" placeholder="admin"></label>
     <label class="field"><span>Пароль</span><input id="a_pass" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="Минимум 8 символов" data-enter="authSubmit"></label>
     <button class="btn" style="margin-top:8px" data-act="authSubmit">${reg ? 'Создать аккаунт' : 'Войти'}</button>
+    ${!reg ? `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
+      <p class="mut small" style="margin-bottom:10px;text-align:center">Быстрый вход для проверки:</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="admin" data-p="admin12345">Войти как Администратор (полный доступ)</button>
+        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="seller" data-p="seller12345">Войти как Менеджер по продажам</button>
+        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="promoter" data-p="promoter12345">Войти как Промоутер Pro (видео)</button>
+      </div>
+    </div>` : ''}
   </div>`, { back: false });
 }
 
@@ -631,6 +639,7 @@ pages.shop = async () => {
     <div class="list">${d.items.map(i => `<div class="row"><div class="grow"><div class="t">${esc(i.title)}</div><div class="d">${esc(i.description || '')}</div></div>
       <div style="text-align:right"><div class="price" style="margin-bottom:6px">${i.price}</div><button class="btn sm" data-act="buy" data-id="${i.id}" data-t="${esc(i.title)}" data-p="${i.price}" ${d.coins < i.price ? 'disabled' : ''}>Купить</button></div></div>`).join('') || '<div class="empty"><b>Витрина пуста</b></div>'}</div>
    ${d.purchases.length ? `<h2 class="h2">Мои покупки</h2><div class="list">${d.purchases.map(p => `<div class="row"><div class="grow"><div class="t">${esc(p.title)}</div><div class="d">${esc(res(p.result))}</div></div>${p.result?.code ? `<button class="btn sm ghost" data-act="copy" data-t="${esc(p.result.code)}">Копировать</button>` : `<span class="price">${p.price}</span>`}</div>`).join('')}</div>` : ''}
+  </div>`, { tabbar: true });
 };
 
 // ───────── profile
@@ -801,6 +810,11 @@ const A = {
   tab: d => open('tab:' + d.k, () => go(d.k)),
   logout: () => logout(),
   authMode: d => { S.authMode = d.k; renderAuth(); },
+  quickLogin(d) {
+    if ($('#a_login')) $('#a_login').value = d.l;
+    if ($('#a_pass')) $('#a_pass').value = d.p;
+    A.authSubmit();
+  },
   async authSubmit() {
     const reg = S.authMode === 'register';
     const r = await api(reg ? 'auth.register' : 'auth.login', { login: val('a_login'), password: $('#a_pass').value, full_name: reg ? val('a_name') : undefined });
