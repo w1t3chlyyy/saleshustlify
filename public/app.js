@@ -630,8 +630,7 @@ pages.shop = async () => {
   view(`<div class="screen"><h1 class="title">Магазин</h1><p class="sub">У вас ${d.coins} HustlifyCoin</p>
     <div class="list">${d.items.map(i => `<div class="row"><div class="grow"><div class="t">${esc(i.title)}</div><div class="d">${esc(i.description || '')}</div></div>
       <div style="text-align:right"><div class="price" style="margin-bottom:6px">${i.price}</div><button class="btn sm" data-act="buy" data-id="${i.id}" data-t="${esc(i.title)}" data-p="${i.price}" ${d.coins < i.price ? 'disabled' : ''}>Купить</button></div></div>`).join('') || '<div class="empty"><b>Витрина пуста</b></div>'}</div>
-    ${d.purchases.length ? `<h2 class="h2">Мои покупки</h2><div class="list">${d.purchases.map(p => `<div class="row"><div class="grow"><div class="t">${esc(p.title)}</div><div class="d">${esc(res(p.result))}</div></div><span class="price">${p.price}</span></div>`).join('')}</div>` : ''}
-  </div>`, { tabbar: true });
+   ${d.purchases.length ? `<h2 class="h2">Мои покупки</h2><div class="list">${d.purchases.map(p => `<div class="row"><div class="grow"><div class="t">${esc(p.title)}</div><div class="d">${esc(res(p.result))}</div></div>${p.result?.code ? `<button class="btn sm ghost" data-act="copy" data-t="${esc(p.result.code)}">Копировать</button>` : `<span class="price">${p.price}</span>`}</div>`).join('')}</div>` : ''}
 };
 
 // ───────── profile
