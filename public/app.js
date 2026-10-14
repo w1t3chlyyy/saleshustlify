@@ -910,11 +910,11 @@ const A = {
   async buy(d) {
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(`Купить «${d.t}» за ${d.p} коинов?`, r)) : confirm(`Купить «${d.t}» за ${d.p} коинов?`);
     if (!ok) return;
-    try {
+       try {
       const r = await api('shop.buy', { item_id: Number(d.id) });
+      try { await pages.shop(); } catch {}   // сначала обновляем магазин (баланс, покупки)
       sheet(`<h3>Готово</h3>${r.result.code ? `<p>Ваш промокод${r.result.discount_percent ? ` на скидку ${r.result.discount_percent}%` : ''}:</p><div class="card" style="font-family:var(--fd);font-weight:600;font-size:20px;text-align:center;margin-bottom:16px">${esc(r.result.code)}</div><button class="btn" data-act="copy" data-t="${esc(r.result.code)}">Скопировать</button>`
         : r.result.until ? `<p>Повышенная ставка (+${r.result.percent}%) уже действует.</p><button class="btn" data-act="closeSheet">Отлично</button>` : `<p>Заявка отправлена администратору в раздел «Проверка». Вам придёт уведомление в бота.</p><button class="btn" data-act="closeSheet">Понятно</button>`}`);
-      pages.shop();
     } catch (e) { toast(e.message); }
   },
   async copy(d) { try { await navigator.clipboard.writeText(d.t); toast('Скопировано'); } catch { toast(d.t); } },
