@@ -623,6 +623,11 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       throw new Http(400, 'У вас не процентная ставка! В роли продвигающего действует оплата за выполненные видео-задания.');
     }
 
+        // Активный буст перезаписывался бы новым, и коины сгорали бы зря
+    if (isBoost && user.boost_until && new Date(user.boost_until) > new Date()) {
+      throw new Http(409, `Ваш буст ещё действует до ${new Date(user.boost_until).toLocaleDateString('ru-RU')}. Купите новый после окончания`);
+    }
+
     need(user.coins >= item.price, 402, 'Не хватает коинов');
     // Промокод берём из загруженных админом кодов; если не получилось списать коины, код возвращаем
     let promo = null;
