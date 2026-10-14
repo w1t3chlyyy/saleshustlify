@@ -1,4 +1,4 @@
-const { db, kb, setting, Http, parseLessonRow, resolveLessonBody } = require('../lib/db');
+const { db, kb, setting, bustSettings, Http, parseLessonRow, resolveLessonBody } = require('../lib/db');
 const crypto = require('crypto');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
@@ -507,14 +507,20 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     let list = await load();
     const c = String(city || '').trim().slice(0, 60);
     if (!list.some(a => a.day === day) && c) {
-      try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
-      let got = await claim(user.id, c, day, limit);
-      if (got < limit) {
-        try { await refillCity(c); } catch (e) { console.error('refill retry', e.message); }
-        got += await claim(user.id, c, day, limit - got);
+      // 1. Переносим на сегодня невзятые подборки прошлых дней (только из этого города)
+      const { data: old } = await db.from('assignments').select('id, business:businesses(city_key)')
+        .eq('user_id', user.id).eq('status', 'assigned').lt('day', day);
+      const ids = (old || []).filter(a => a.business?.city_key === c.toLowerCase()).map(a => a.id);
+      if (ids.length) await db.from('assignments').update({ day }).in('id', ids);
+      list = await load();
+
+      // 2. Если сегодняшней подборки всё ещё нет, пополняем базу из OSM и выдаём новые
+      if (!list.some(a => a.day === day)) {
+        try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
+        await claim(user.id, c, day, limit);
+        list = await load();
       }
       await db.from('users').update({ city: c }).eq('id', user.id);
-      list = await load();
       need(list.some(a => a.day === day), 404, 'В этом городе пока нет подходящих бизнесов без сайта. Попробуйте другой город');
     }
     const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
