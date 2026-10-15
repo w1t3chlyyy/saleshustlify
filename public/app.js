@@ -219,12 +219,7 @@ function renderAuth() {
     <label class="field"><span>Пароль</span><input id="a_pass" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="Минимум 8 символов" data-enter="authSubmit"></label>
     <button class="btn" style="margin-top:8px" data-act="authSubmit">${reg ? 'Создать аккаунт' : 'Войти'}</button>
     ${!reg ? `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
-      <p class="mut small" style="margin-bottom:10px;text-align:center">Быстрый вход для проверки:</p>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="admin" data-p="admin12345">Войти как Администратор (полный доступ)</button>
-        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="seller" data-p="seller12345">Войти как Менеджер по продажам</button>
-        <button class="btn ghost sm" style="width:100%" data-act="quickLogin" data-l="promoter" data-p="promoter12345">Войти как Промоутер Pro (видео)</button>
-      </div>
+      
     </div>` : ''}
   </div>`, { back: false });
 }
