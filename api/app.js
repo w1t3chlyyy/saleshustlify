@@ -502,12 +502,11 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
   async 'base.today'({ user }, { city, refresh } = {}) {
     requireSeller(user);
     requireTrained(user);
+    need(typeof city === 'string' && city.trim(), 400, 'Сначала укажите город, затем запустите поиск.');
     const day = today();
     const limit = await setting('daily_batch', 15);
 
-    // Определяем целевой город: переданный явно, либо сохранённый у пользователя, либо Казань по умолчанию
-    const rawTarget = String(city || user.city || 'Казань').trim();
-    const target = normalizeCity(rawTarget);
+    const target = normalizeCity(city.trim());
 
     const load = async () => {
       const { data, error } = await db.from('assignments').select('*, business:businesses(*)')

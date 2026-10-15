@@ -584,8 +584,13 @@ function bizCard(a) {
 }
 
 async function wToday() {
-  const d = S.todayData || await api('base.today');
-  S.todayData = null;
+  const d = S.todayData;
+  if (!d) return `<div class="card">
+    <b style="font-family:var(--fd)">Сначала укажите город</b>
+    <p class="mut small" style="margin:6px 0 8px">Поиск организаций в 2ГИС начнётся только после нажатия кнопки.</p>
+    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" data-enter="getBase"></label>
+    <button class="btn" style="width:100%" data-act="getBase">Найти бизнесы</button>
+  </div>`;
   S.guideUrl = d.guide_url || '';
   const guideBtn = `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(d.guide_url || S.guideUrl || '')}">${I.book}Как работать по базе?</button></div>`;
 
@@ -615,6 +620,10 @@ async function wToday() {
   </div>`;
 
   return (showPicker ? pickerCard : '') + infoCard + guideBtn + (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Выберите город выше.</div>');
+}
+function updateTodayItem(id, updates) {
+  const item = S.todayData?.items.find(a => String(a.id) === String(id));
+  if (item) Object.assign(item, updates);
 }
 async function wHistory() {
   const d = await api('base.history');
@@ -916,6 +925,7 @@ const A = {
       const f = $('#p_file').files[0];
       const image = f ? await compress(f) : undefined;
       await api('base.submit', { assignment_id: Number(d.id), text, image });
+      updateTodayItem(d.id, { status: 'submitted', proof_text: text, submitted_at: new Date().toISOString() });
       toast('Отправлено на проверку'); closeSheet(); pages.work();
     } catch (e) { toast(e.message); el.disabled = false; }
   },
@@ -1056,7 +1066,11 @@ const A = {
   },
   bizSheet, taskSheet, planSheet,
   testVideo: () => open('testvideo', testVideo),
-  async take(d) { await api('base.take', { assignment_id: Number(d.id) }); toast('Взято в работу'); closeSheet(); pages.work(); },
+  async take(d) {
+    await api('base.take', { assignment_id: Number(d.id) });
+    updateTodayItem(d.id, { status: 'in_work', taken_at: new Date().toISOString() });
+    toast('Взято в работу'); closeSheet(); pages.work();
+  },
   async roleSet(d) {
     const msg = `Выбрать роль «${d.k === 'seller' ? 'продаю' : 'продвигаю проект'}»? Потом её сможет изменить только администратор.`;
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
