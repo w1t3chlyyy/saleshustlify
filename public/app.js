@@ -589,16 +589,10 @@ async function wToday() {
   S.guideUrl = d.guide_url || '';
   const guideBtn = `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(d.guide_url || S.guideUrl || '')}">${I.book}Как работать по базе?</button></div>`;
 
-  const topCities = ['Казань', 'Москва', 'Санкт-Петербург', 'Екатеринбург', 'Новосибирск', 'Нижний Новгород', 'Самара', 'Уфа', 'Краснодар', 'Сочи'];
-  const chipsHtml = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px">
-    ${topCities.map(c => `<button class="btn ghost sm" style="padding:4px 9px;font-size:12px;border-radius:14px;border:1px solid rgba(255,255,255,0.14);${c === d.city ? 'background:rgba(255,255,255,0.18);font-weight:600' : ''}" data-act="quickCity" data-city="${esc(c)}">${esc(c)}</button>`).join('')}
-  </div>`;
-
   const pickerCard = `<div class="card" style="margin-bottom:12px">
     <b style="font-family:var(--fd)">Выберите любой город</b>
-    <p class="mut small" style="margin:6px 0 8px">Выдаем ${d.limit} проверенных бизнесов без сайта с 1-го раза по последним данным карт и гео-сервисов.</p>
-    ${chipsHtml}
-    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Например: Самара, Тюмень, Владивосток..." value="${esc(d.city || '')}" data-enter="getBase"></label>
+    <p class="mut small" style="margin:6px 0 8px">Ищем организации в каталоге 2ГИС; если он недоступен — используем OpenStreetMap. Показываем до ${d.limit} бизнесов без сайта.</p>
+    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" value="${esc(d.city || '')}" data-enter="getBase"></label>
     <button class="btn" style="width:100%" data-act="getBase">Получить подборку</button>
   </div>`;
 
@@ -890,20 +884,6 @@ const A = {
   aseg: d => { S.aseg = d.k; adminView(); },
   toggleCityBox() {
     S.showCityPicker = !S.showCityPicker;
-    pages.work();
-  },
-  async quickCity(d) {
-    const city = d.city;
-    if (!city) return;
-    S.showCityPicker = false;
-    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Загружаем подборку: ${esc(city)}…</p>`;
-    try {
-      const res = await api('base.today', { city });
-      S.todayData = res;
-      toast(res.items.length
-        ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
-        : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
-    } catch (e) { toast(e.message); }
     pages.work();
   },
   async getBase() {
