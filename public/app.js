@@ -218,9 +218,6 @@ function renderAuth() {
     <label class="field"><span>Логин</span><input id="a_login" autocapitalize="none" autocomplete="username" placeholder="admin"></label>
     <label class="field"><span>Пароль</span><input id="a_pass" type="password" autocomplete="${reg ? 'new-password' : 'current-password'}" placeholder="Минимум 8 символов" data-enter="authSubmit"></label>
     <button class="btn" style="margin-top:8px" data-act="authSubmit">${reg ? 'Создать аккаунт' : 'Войти'}</button>
-    ${!reg ? `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--line)">
-      
-    </div>` : ''}
   </div>`, { back: false });
 }
 
