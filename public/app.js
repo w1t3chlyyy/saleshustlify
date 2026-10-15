@@ -893,8 +893,10 @@ const A = {
       const left = res.locked_until ? fmtLeft(new Date(res.locked_until).getTime() - Date.now()) : '';
       toast(res.already
         ? `Подборка уже получена. Новую можно взять через ${left}`
-        : res.items.length
-          ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
+                : res.items.length
+          ? (res.locked_until
+            ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
+            : `Пока нашлось только ${res.items.length}. Нажмите «Получить подборку» позже: поиск продолжится`)
           : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
       pages.work();
     } catch (e) {
