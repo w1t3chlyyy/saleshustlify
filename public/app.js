@@ -556,8 +556,10 @@ const segHtml = (act, cur, items) => `<div class="seg">${items.map(([k, l]) => `
 
 pages.work = async () => {
   if (S.user.track === 'promoter') return promoWork();
+  const guideUrl = S.guideUrl || 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11';
   view(`<div class="screen"><h1 class="title">Работа</h1><p class="sub">Ищите клиентов сами или работайте по базе</p>
     ${segHtml('wseg', S.wseg, [['today', 'Сегодня'], ['history', 'История'], ['leads', 'Клиенты']])}
+    ${S.wseg === 'today' ? `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(guideUrl)}">${I.book}Как работать по базе?</button></div>` : ''}
     <div id="wbody"><div class="spin"></div></div></div>`, { tabbar: true });
   try { $('#wbody').innerHTML = await ({ today: wToday, history: wHistory, leads: wLeads })[S.wseg](); }
   catch (e) { $('#wbody').innerHTML = errBlock(e); }
@@ -592,7 +594,6 @@ async function wToday() {
     <button class="btn" style="width:100%" data-act="getBase">Найти бизнесы</button>
   </div>`;
   S.guideUrl = d.guide_url || '';
-  const guideBtn = `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(d.guide_url || S.guideUrl || '')}">${I.book}Как работать по базе?</button></div>`;
 
   const pickerCard = `<div class="card" style="margin-bottom:12px">
     <b style="font-family:var(--fd)">Выберите любой город</b>
@@ -619,7 +620,7 @@ async function wToday() {
     <p class="mut small" style="margin:0">Всего в подборке: <b>${items.length}</b> (в работе: <b>${working}</b>, отправлено: <b>${sent}</b>). Прямой переход открывает карточку заведения в картах.</p>
   </div>`;
 
-  return (showPicker ? pickerCard : '') + infoCard + guideBtn + (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Выберите город выше.</div>');
+  return (showPicker ? pickerCard : '') + infoCard + (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Выберите город выше.</div>');
 }
 function updateTodayItem(id, updates) {
   const item = S.todayData?.items.find(a => String(a.id) === String(id));
@@ -902,6 +903,7 @@ const A = {
     try {
       const res = await api('base.today', { city });
       S.todayData = res;
+      S.guideUrl = res.guide_url || S.guideUrl;
       toast(res.items.length
         ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
         : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
