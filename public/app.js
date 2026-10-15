@@ -144,7 +144,7 @@ const closeSheet = () => document.querySelector('.overlay')?.remove();
 function logout(silent) {
   try { localStorage.removeItem('h_token'); } catch {}
   token = '';
-  Object.assign(S, { user: null, me: null, adminChat: [], aiImages: [], assign: {}, leads: {}, tasks: {}, tab: 'home', authMode: 'login', quiz: null, p: null });
+  Object.assign(S, { user: null, me: null, adminChat: [], aiImages: [], assign: {}, leads: {}, tasks: {}, tab: 'home', authMode: 'login', quiz: null, p: null, todayData: null });
   resetNav();
   renderAuth();
   if (silent) toast('Войдите снова');
@@ -281,7 +281,8 @@ function bizSheet(d) {
       ${linkEl(m.yandex, 'Открыть в Яндекс Картах (карточка бизнеса)', 'btn ghost sm')}
       ${m.gis ? linkEl(m.gis, 'Открыть в 2ГИС', 'btn ghost sm') : ''}
     </div>
-    ${action}`);
+        ${action}
+    ${['assigned', 'in_work'].includes(a.status) ? `<button class="btn ghost sm" style="margin-top:8px;width:100%" data-act="siteReport" data-id="${a.id}">У бизнеса есть сайт</button>` : ''}`);
 }
 
 async function promoWork() {
@@ -578,41 +579,35 @@ function bizCard(a) {
 }
 
 async function wToday() {
+  if (!S.todayData) S.todayData = await api('base.today', {});
   const d = S.todayData;
-  if (!d) return `<div class="card">
-    <b style="font-family:var(--fd)">Сначала укажите город</b>
-    <p class="mut small" style="margin:6px 0 8px">Поиск организаций в 2ГИС начнётся только после нажатия кнопки.</p>
-    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" data-enter="getBase"></label>
-    <button class="btn" style="width:100%" data-act="getBase">Найти бизнесы</button>
-  </div>`;
-  S.guideUrl = d.guide_url || '';
-
-  const pickerCard = `<div class="card" style="margin-bottom:12px">
-    <b style="font-family:var(--fd)">Выберите любой город</b>
-    <p class="mut small" style="margin:6px 0 8px">Ищем организации в каталоге 2ГИС. Показываем до ${d.limit} бизнесов без сайта.</p>
-    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" value="${esc(d.city || '')}" data-enter="getBase"></label>
-    <button class="btn" style="width:100%" data-act="getBase">Получить подборку</button>
-  </div>`;
+  S.guideUrl = d.guide_url || S.guideUrl;
+  const leftMs = d.locked_until ? new Date(d.locked_until).getTime() - Date.now() : 0;
+  const locked = leftMs > 0;
+  const h = Math.floor(leftMs / 3600e3), m = Math.floor((leftMs % 3600e3) / 60e3);
 
   const order = { in_work: 0, rejected: 1, assigned: 2, submitted: 3, approved: 4 };
   const items = [...d.items].sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
   const working = items.filter(a => a.status === 'in_work').length;
   const sent = items.filter(a => ['submitted', 'approved'].includes(a.status)).length;
 
-  const showPicker = S.showCityPicker || !d.items.length;
+  const pickerCard = `<div class="card" style="margin-bottom:12px">
+    <b style="font-family:var(--fd)">Получить подборку на 24 часа</b>
+    <p class="mut small" style="margin:6px 0 8px">Укажите город: подберём до ${d.limit} бизнесов без сайта. Следующую подборку можно будет получить через 24 часа.</p>
+    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" value="${esc(d.city || '')}" data-enter="getBase"></label>
+    <button class="btn" style="width:100%" data-act="getBase">Получить подборку</button>
+  </div>`;
 
   const infoCard = `<div class="card" style="margin-bottom:12px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <b style="font-family:var(--fd)">База бизнесов без сайта</b>
-      <div style="display:flex;align-items:center;gap:6px">
-        <span class="pill sm" style="font-weight:600">${esc(d.city || 'Выбрано')}</span>
-        <button class="btn ghost sm" data-act="toggleCityBox" style="padding:3px 8px;font-size:11px">${showPicker ? 'Скрыть выбор' : 'Сменить город'}</button>
-      </div>
+      <b style="font-family:var(--fd)">Ваша подборка</b>
+      <span class="pill sm" style="font-weight:600">${esc(d.city || '')}</span>
     </div>
-    <p class="mut small" style="margin:0">Всего в подборке: <b>${items.length}</b> (в работе: <b>${working}</b>, отправлено: <b>${sent}</b>). Прямой переход открывает карточку заведения в картах.</p>
+    <p class="mut small" style="margin:0">Всего: <b>${items.length}</b> (в работе: <b>${working}</b>, отправлено: <b>${sent}</b>). Новую подборку можно получить через <b>${h} ч ${m} мин</b>.</p>
   </div>`;
 
-  return (showPicker ? pickerCard : '') + infoCard + (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Выберите город выше.</div>');
+  return (locked ? infoCard : pickerCard) +
+    (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Получите подборку выше.</div>');
 }
 function updateTodayItem(id, updates) {
   const item = S.todayData?.items.find(a => String(a.id) === String(id));
@@ -888,17 +883,19 @@ const A = {
     S.showCityPicker = !S.showCityPicker;
     pages.work();
   },
-  async getBase(d = {}) {
+    async getBase(d = {}) {
     const city = String(d.city || val('city')).trim(); if (!city) return toast('Укажите город');
-    S.showCityPicker = false;
     $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы в г. ${esc(city)}…</p>`;
     try {
       const res = await api('base.today', { city });
       S.todayData = res;
       S.guideUrl = res.guide_url || S.guideUrl;
-      toast(res.items.length
-        ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
-        : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
+      const left = res.locked_until ? fmtLeft(new Date(res.locked_until).getTime() - Date.now()) : '';
+      toast(res.already
+        ? `Подборка уже получена. Новую можно взять через ${left}`
+        : res.items.length
+          ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
+          : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
       pages.work();
     } catch (e) {
       toast(e.message);
@@ -1059,11 +1056,20 @@ const A = {
     toast('Кэш тестов очищен. Вопросы перегенерируются заново.');
   },
   bizSheet, taskSheet, planSheet,
-  testVideo: () => open('testvideo', testVideo),
+    testVideo: () => open('testvideo', testVideo),
   async take(d) {
     await api('base.take', { assignment_id: Number(d.id) });
     updateTodayItem(d.id, { status: 'in_work', taken_at: new Date().toISOString() });
     toast('Взято в работу'); closeSheet(); pages.work();
+  },
+  async siteReport(d) {
+    const msg = 'У этого бизнеса есть свой сайт? Он будет убран из подборки и больше никому не выдастся.';
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
+    if (!ok) return;
+    const r = await api('base.report_site', { assignment_id: Number(d.id) });
+    S.todayData = await api('base.today', {});
+    toast(r.replaced ? 'Убрали из подборки и добавили замену' : 'Убрали из подборки');
+    closeSheet(); pages.work();
   },
   async roleSet(d) {
     const msg = `Выбрать роль «${d.k === 'seller' ? 'продаю' : 'продвигаю проект'}»? Потом её сможет изменить только администратор.`;
