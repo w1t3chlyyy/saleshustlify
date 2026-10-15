@@ -84,6 +84,15 @@ async function multipliers(user) {
 const rewardOf = (t, k) => ({ money: Math.round(Number(t.reward_money) * k.m * 100) / 100, coins: Math.round(t.reward_coins * k.c) });
 
 const PRACTICE_COOLDOWN_MS = 12 * 3600 * 1000;
+const BATCH_MS = 24 * 3600 * 1000;
+const batchInfo = user => {
+  const t = user.base_batch_at ? new Date(user.base_batch_at).getTime() : 0;
+  const until = t + BATCH_MS;
+  if (t && until > Date.now()) {
+    return { active: true, until: new Date(until).toISOString(), day: new Date(t).toLocaleDateString('en-CA', { timeZone: process.env.TZ_NAME || 'Europe/Moscow' }) };
+  }
+  return { active: false };
+};
 const VALID_ORDER_LINK_RE = /(?:https?:\/\/)?(?:www\.)?hustlify\.site\b|(?:@|https?:\/\/t\.me\/|t\.me\/)?hustlifybot\b/i;
 
 async function practiceRetryAt(user) {
@@ -245,7 +254,8 @@ const H = {
   async me({ user }) {
     await db.from('users').update({ last_seen: new Date().toISOString() }).eq('id', user.id);
     const pct = await percentFor(user);
-    const day = today();
+       const bi = batchInfo(user);
+    const day = bi.active ? bi.day : today();
     const { data: todays } = await db.from('assignments').select('status').eq('user_id', user.id).eq('day', day);
     const { count: leads } = await db.from('leads').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
     const { count: won } = await db.from('assignments').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'approved');
@@ -498,84 +508,69 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { passed, reward, retry_at, ...r };
   },
 
-  // ── работа по базе
-  async 'base.today'({ user }, { city, refresh } = {}) {
+   async 'base.today'({ user }, { city } = {}) {
     requireSeller(user);
     requireTrained(user);
-    need(typeof city === 'string' && city.trim(), 400, 'Сначала укажите город, затем запустите поиск.');
-    const day = today();
     const limit = await setting('daily_batch', 15);
+    let batch = batchInfo(user);
+    let already = false;
+    const wanted = typeof city === 'string' ? city.trim() : '';
 
-    const target = normalizeCity(city.trim());
-
-    const load = async () => {
-      const { data, error } = await db.from('assignments').select('*, business:businesses(*)')
-        .eq('user_id', user.id).or(`day.eq.${day},status.eq.in_work`).order('id');
-      if (error) throw error;
-      return data || [];
-    };
-
-    let list = await load();
-
-    const explicitCity = Boolean(city);
-    const userCityKey = String(user.city || '').toLowerCase().replace(/^(?:г|гор|город)\.?\s+/i, '');
-    const isDifferentCity = explicitCity && target.key !== userCityKey;
-
-       const matchesTargetCity = a => {
-      const bKey = String(a.business?.city_key || a.business?.city || '').toLowerCase();
-      return a.business?.source === '2gis'
-        && Number(a.business?.filter_version || 0) >= 2
-        && (bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey));
-    };
-
-    let cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
-
-    if (isDifferentCity || cityTodayItems.length === 0 || refresh) {
-      user.city = target.name;
-      await db.from('users').update({ city: target.name }).eq('id', user.id);
-
-      // При смене города убираем старые невзятые ('assigned') задания сегодняшнего дня другого города
-      if (isDifferentCity) {
-        const otherAssignedIds = list
-          .filter(a => a.day === day && a.status === 'assigned' && !matchesTargetCity(a))
-          .map(a => a.id);
-        if (otherAssignedIds.length) {
-          await db.from('assignments').delete().in('id', otherAssignedIds);
+    if (wanted && batch.active) {
+      already = true; // подборка уже на руках, новая только через 24 часа
+    } else if (wanted) {
+      const target = normalizeCity(wanted);
+      await db.from('assignments').delete().eq('user_id', user.id).eq('status', 'assigned');
+      const day = today();
+      let got = await claim(user.id, target.key, day, limit);
+      if (got < limit) {
+        try {
+          await refillCity(target.name);
+        } catch (e) {
+          console.error('[API] refillCity error:', e.message);
+          if (!got) throw new Http(503, `Не удалось загрузить бизнесы для г. ${target.name}: ${e.message}`);
         }
+        got += await claim(user.id, target.key, day, limit - got);
       }
-
-      // Не возвращаем пустую успешную подборку, если поиск или запись базы завершились ошибкой.
-      try {
-        await refillCity(target.name, limit + 25);
-      } catch (e) {
-        console.error('[API] refillCity error:', e.message);
-        throw new Http(503, `Не удалось загрузить бизнесы для г. ${target.name}: ${e.message}`);
+      if (got > 0) {
+        const nowIso = new Date().toISOString();
+        await db.from('users').update({ city: target.name, base_batch_at: nowIso }).eq('id', user.id);
+        user.city = target.name;
+        user.base_batch_at = nowIso;
+        batch = batchInfo(user);
       }
-
-      // Назначаем задания сотруднику
-      const countToClaim = Math.max(limit - cityTodayItems.length, 1);
-      await claim(user.id, target.key, day, countToClaim);
-
-      list = await load();
-      cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
     }
 
-    // Если всё ещё пусто (крайний случай) — гарантированно пополняем
-    if (!list.some(a => a.day === day)) {
-      await refillCity(target.name, limit + 25);
-      await claim(user.id, target.key, day, limit);
-      list = await load();
-    }
-
-    const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
-    const targetItems = list.filter(a => matchesTargetCity(a) || a.status === 'in_work');
+    let q = db.from('assignments').select('*, business:businesses(*)').eq('user_id', user.id);
+    q = batch.active ? q.or(`day.eq.${batch.day},status.eq.in_work`) : q.eq('status', 'in_work');
+    const { data, error } = await q.order('id');
+    if (error) throw error;
+    const items = (data || []).filter(a => a.business && a.business.source === '2gis' && !a.business.has_site);
     return {
-      items: targetItems.map(assignmentView),
+      items: items.map(assignmentView),
       limit,
-      city: target.name,
-      has_today: targetItems.some(a => a.day === day),
-      guide_url: guideUrl,
+      city: user.city || '',
+      locked_until: batch.active ? batch.until : null,
+      already,
+      guide_url: await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
     };
+  },
+
+  async 'base.report_site'({ user }, { assignment_id }) {
+    requireSeller(user);
+    requireTrained(user);
+    const { data: a } = await db.from('assignments').select('id,status,business_id').eq('id', assignment_id).eq('user_id', user.id).maybeSingle();
+    need(a, 404, 'Задание не найдено');
+    need(['assigned', 'in_work'].includes(a.status), 409, 'Работа уже отправлена на проверку');
+    await db.from('businesses').update({ has_site: true }).eq('id', a.business_id);
+    await db.from('assignments').delete().eq('id', a.id);
+    await db.from('audit_log').insert({ admin_id: user.id, action: 'site_report', payload: { business_id: a.business_id } });
+    let replaced = 0;
+    const batch = batchInfo(user);
+    if (batch.active && user.city) {
+      replaced = await claim(user.id, normalizeCity(user.city).key, batch.day, 1);
+    }
+    return { ok: true, replaced };
   },
 
   async 'base.take'({ user }, { assignment_id }) {
