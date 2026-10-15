@@ -532,17 +532,18 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
         }
         got += await claim(user.id, target.key, day, limit - got);
       }
-      if (got > 0) {
-        const nowIso = new Date().toISOString();
-        await db.from('users').update({ city: target.name, base_batch_at: nowIso }).eq('id', user.id);
+            if (got > 0) {
+        const patch = { city: target.name };
+        // 24 часа действуют только для полноценной подборки; если нашлось мало, не блокируем
+        if (got >= Math.min(limit, 8)) patch.base_batch_at = new Date().toISOString();
+        await db.from('users').update(patch).eq('id', user.id);
         user.city = target.name;
-        user.base_batch_at = nowIso;
-        batch = batchInfo(user);
+        if (patch.base_batch_at) { user.base_batch_at = patch.base_batch_at; batch = batchInfo(user); }
       }
     }
 
     let q = db.from('assignments').select('*, business:businesses(*)').eq('user_id', user.id);
-    q = batch.active ? q.or(`day.eq.${batch.day},status.eq.in_work`) : q.eq('status', 'in_work');
+    q = q.or(`day.eq.${batch.active ? batch.day : today()},status.eq.in_work`);
     const { data, error } = await q.order('id');
     if (error) throw error;
     const items = (data || []).filter(a => a.business && a.business.source === '2gis' && !a.business.has_site);
