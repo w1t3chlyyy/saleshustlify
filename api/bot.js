@@ -1,5 +1,6 @@
 const { tg } = require('../lib/telegram');
 const { db, setting, bustSettings } = require('../lib/db');
+const { hashPassword } = require('../lib/security');
 
 const DEFAULT_WELCOME = 'Добро пожаловать в Hustlify 👋\n\nЭто рабочее пространство отдела продаж: обучение, практика с клиентом, база бизнесов, коины и выплаты — всё в одном приложении.\n\nНажмите кнопку ниже, чтобы войти.';
 
@@ -85,13 +86,29 @@ async function adminCommand(m) {
   return true;
 }
 
+async function adminPassCommand(m) {
+  const say = text => tg('sendMessage', { chat_id: m.chat.id, text });
+  const mm = /^\/setpass(?:@\w+)?\s+(\S+)\s+(\S{8,100})\s*$/.exec(m.text || '');
+  if (!mm) { await say('Формат: /setpass логин новый_пароль (пароль от 8 символов)'); return true; }
+  const login = mm[1].toLowerCase();
+  const { data } = await db.from('users')
+    .update({ pass_hash: hashPassword(mm[2]), fail_count: 0, locked_until: null })
+    .eq('login', login).select('id');
+  await tg('deleteMessage', { chat_id: m.chat.id, message_id: m.message_id }).catch(() => null);
+  await say(data?.length ? `Пароль для «${login}» обновлён, сообщение с паролем удалено.` : 'Пользователь с таким логином не найден');
+  return true;
+}
+
 module.exports = async (req, res) => {
   if (process.env.WEBHOOK_SECRET && req.headers['x-telegram-bot-api-secret-token'] !== process.env.WEBHOOK_SECRET)
     return res.status(401).end();
   try {
     const m = req.body?.message;
-    if (m?.chat?.type === 'private') {
-      const handled = m.from && /^\/welcome/.test(m.text ?? m.caption ?? '') && await isAdmin(m.from.id) && await adminCommand(m);
+        if (m?.chat?.type === 'private') {
+      const txt = m.text ?? m.caption ?? '';
+      let handled = false;
+      if (m.from && /^\/setpass/.test(txt) && await isAdmin(m.from.id)) handled = await adminPassCommand(m);
+      else if (m.from && /^\/welcome/.test(txt) && await isAdmin(m.from.id)) handled = await adminCommand(m);
       if (!handled) await sendWelcome(m.chat.id);
     }
   } catch (e) { console.error(e); }
