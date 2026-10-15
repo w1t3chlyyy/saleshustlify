@@ -524,7 +524,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
 
     const matchesTargetCity = a => {
       const bKey = String(a.business?.city_key || a.business?.city || '').toLowerCase();
-      return bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey);
+      return a.business?.source === '2gis' && (bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey));
     };
 
     let cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));

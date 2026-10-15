@@ -273,6 +273,7 @@ begin
       limit 1
     ) stale on true
     where b.city_key = lower(trim(p_city))
+      and b.source = '2gis'
       and not exists (
         select 1 from assignments a
         where a.business_id = b.id

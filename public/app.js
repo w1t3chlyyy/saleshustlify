@@ -591,7 +591,7 @@ async function wToday() {
 
   const pickerCard = `<div class="card" style="margin-bottom:12px">
     <b style="font-family:var(--fd)">Выберите любой город</b>
-    <p class="mut small" style="margin:6px 0 8px">Ищем организации в каталоге 2ГИС; если он недоступен — используем OpenStreetMap. Показываем до ${d.limit} бизнесов без сайта.</p>
+    <p class="mut small" style="margin:6px 0 8px">Ищем организации в каталоге 2ГИС. Показываем до ${d.limit} бизнесов без сайта.</p>
     <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Введите название города" value="${esc(d.city || '')}" data-enter="getBase"></label>
     <button class="btn" style="width:100%" data-act="getBase">Получить подборку</button>
   </div>`;
