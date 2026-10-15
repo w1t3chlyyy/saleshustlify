@@ -900,7 +900,9 @@ const A = {
     try {
       const res = await api('base.today', { city });
       S.todayData = res;
-      toast(`Подборка по г. ${res.city || city} готова!`);
+      toast(res.items.length
+        ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
+        : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
     } catch (e) { toast(e.message); }
     pages.work();
   },
@@ -911,7 +913,9 @@ const A = {
     try {
       const res = await api('base.today', { city });
       S.todayData = res;
-      toast(`Подборка по г. ${res.city || city} готова!`);
+      toast(res.items.length
+        ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
+        : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
     } catch (e) { toast(e.message); }
     pages.work();
   },

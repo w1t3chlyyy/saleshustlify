@@ -509,8 +509,12 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const rawTarget = String(city || user.city || 'Казань').trim();
     const target = normalizeCity(rawTarget);
 
-    const load = async () => (await db.from('assignments').select('*, business:businesses(*)')
-      .eq('user_id', user.id).or(`day.eq.${day},status.eq.in_work`).order('id')).data || [];
+    const load = async () => {
+      const { data, error } = await db.from('assignments').select('*, business:businesses(*)')
+        .eq('user_id', user.id).or(`day.eq.${day},status.eq.in_work`).order('id');
+      if (error) throw error;
+      return data || [];
+    };
 
     let list = await load();
 
@@ -539,7 +543,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
         }
       }
 
-      // Пополняем базу для целевого города (OSM + гарантированная генерация)
+      // Пополняем базу для целевого города (OSM); при ошибке выдача попробует имеющиеся записи.
       try {
         await refillCity(target.name, limit + 25);
       } catch (e) {
@@ -548,7 +552,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
 
       // Назначаем задания сотруднику
       const countToClaim = Math.max(limit - cityTodayItems.length, 1);
-      await claim(user.id, target.name, day, countToClaim);
+      await claim(user.id, target.key, day, countToClaim);
 
       list = await load();
       cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
@@ -557,7 +561,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     // Если всё ещё пусто (крайний случай) — гарантированно пополняем
     if (!list.some(a => a.day === day)) {
       await refillCity(target.name, limit + 25);
-      await claim(user.id, target.name, day, limit);
+      await claim(user.id, target.key, day, limit);
       list = await load();
     }
 

@@ -12,6 +12,7 @@
 
 ## Запуск
 1. **Supabase.** Создай проект, выполни `supabase/schema.sql` в SQL Editor. Возьми `Project URL` и `service_role` key. Твои таблицы товаров и кейсов уже есть: если называются не `products` и `cases`, поменяй `PRODUCTS_TABLE` / `CASES_TABLE`.
+   Для уже работающего проекта выполни SQL из `supabase/migrations/002_reuse_stale_business_assignments.sql`, чтобы обновить выдачу базы бизнесов.
 2. **Бот.** В @BotFather создай бота, получи токен. Свой Telegram ID узнай у @userinfobot и впиши в `ADMIN_TG_IDS`: при регистрации получишь роль admin.
 3. **GitHub + Vercel.** Залей проект в репозиторий, импортируй в Vercel, добавь все переменные из `.env.example`. После деплоя поставь `APP_URL` = адрес проекта и передеплой.
 4. **Вебхук и кнопка меню** (один раз, подставь свои значения):
