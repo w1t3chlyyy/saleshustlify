@@ -521,9 +521,11 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const userCityKey = String(user.city || '').toLowerCase().replace(/^(?:г|гор|город)\.?\s+/i, '');
     const isDifferentCity = explicitCity && target.key !== userCityKey;
 
-    const matchesTargetCity = a => {
+       const matchesTargetCity = a => {
       const bKey = String(a.business?.city_key || a.business?.city || '').toLowerCase();
-      return a.business?.source === '2gis' && (bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey));
+      return a.business?.source === '2gis'
+        && Number(a.business?.filter_version || 0) >= 2
+        && (bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey));
     };
 
     let cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
