@@ -567,9 +567,13 @@ function bizCard(a) {
   const b = a.business || {}, m = b.maps || {};
   S.assign[a.id] = a;
   return `<div class="biz" data-act="bizSheet" data-id="${a.id}" style="cursor:pointer">
-    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><h3>${esc(b.name)}</h3><span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span></div>
+    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+      <h3>${esc(b.name)}</h3>
+      <span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span>
+    </div>
     ${b.category ? `<div class="meta">${esc(b.category)}</div>` : ''}
     ${b.address ? `<div class="meta small mut">${esc(b.address)}</div>` : ''}
+    ${b.phone ? `<div class="meta small" style="color:var(--text);font-weight:500;margin-top:2px">📞 ${esc(b.phone)}</div>` : ''}
     ${a.status === 'in_work' && a.taken_at ? `<div class="meta">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
     <div class="foot" style="margin-top:10px;display:flex;gap:8px;align-items:center;justify-content:space-between">
@@ -580,27 +584,43 @@ function bizCard(a) {
 }
 
 async function wToday() {
-  const d = await api('base.today');
+  const d = S.todayData || await api('base.today');
+  S.todayData = null;
   S.guideUrl = d.guide_url || '';
   const guideBtn = `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(d.guide_url || S.guideUrl || '')}">${I.book}Как работать по базе?</button></div>`;
-  const picker = `<div class="card" style="margin-bottom:12px">
-    <b style="font-family:var(--fd)">Выберите город</b>
-    <p class="mut small" style="margin:6px 0 14px">Получите ${d.limit} проверенных бизнесов без сайта. База автоматически обновляется и верифицируется. Взятые в работу остаются с вами до отправки результата.</p>
-    <label class="field"><input id="city" placeholder="Например, Казань" value="${esc(d.city)}" data-enter="getBase"></label>
-    <button class="btn" data-act="getBase">Получить подборку</button></div>` + guideBtn;
-  if (!d.items.length) return picker;
+
+  const topCities = ['Казань', 'Москва', 'Санкт-Петербург', 'Екатеринбург', 'Новосибирск', 'Нижний Новгород', 'Самара', 'Уфа', 'Краснодар', 'Сочи'];
+  const chipsHtml = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px">
+    ${topCities.map(c => `<button class="btn ghost sm" style="padding:4px 9px;font-size:12px;border-radius:14px;border:1px solid rgba(255,255,255,0.14);${c === d.city ? 'background:rgba(255,255,255,0.18);font-weight:600' : ''}" data-act="quickCity" data-city="${esc(c)}">${esc(c)}</button>`).join('')}
+  </div>`;
+
+  const pickerCard = `<div class="card" style="margin-bottom:12px">
+    <b style="font-family:var(--fd)">Выберите любой город</b>
+    <p class="mut small" style="margin:6px 0 8px">Выдаем ${d.limit} проверенных бизнесов без сайта с 1-го раза по последним данным карт и гео-сервисов.</p>
+    ${chipsHtml}
+    <label class="field" style="margin-bottom:10px"><input id="city" placeholder="Например: Самара, Тюмень, Владивосток..." value="${esc(d.city || '')}" data-enter="getBase"></label>
+    <button class="btn" style="width:100%" data-act="getBase">Получить подборку</button>
+  </div>`;
+
   const order = { in_work: 0, rejected: 1, assigned: 2, submitted: 3, approved: 4 };
   const items = [...d.items].sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
   const working = items.filter(a => a.status === 'in_work').length;
   const sent = items.filter(a => ['submitted', 'approved'].includes(a.status)).length;
+
+  const showPicker = S.showCityPicker || !d.items.length;
+
   const infoCard = `<div class="card" style="margin-bottom:12px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <b style="font-family:var(--fd)">База бизнесов без сайта</b>
-      <span class="pill sm">${esc(d.city || 'Выбрано')}</span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="pill sm" style="font-weight:600">${esc(d.city || 'Выбрано')}</span>
+        <button class="btn ghost sm" data-act="toggleCityBox" style="padding:3px 8px;font-size:11px">${showPicker ? 'Скрыть выбор' : 'Сменить город'}</button>
+      </div>
     </div>
-    <p class="mut small" style="margin:0">В работе: <b>${working}</b>, отправлено на проверку: <b>${sent}</b>. Прямой переход открывает карточку заведения в картах.</p>
-  </div>` + guideBtn;
-  return (d.has_today ? infoCard : picker) + items.map(bizCard).join('');
+    <p class="mut small" style="margin:0">Всего в подборке: <b>${items.length}</b> (в работе: <b>${working}</b>, отправлено: <b>${sent}</b>). Прямой переход открывает карточку заведения в картах.</p>
+  </div>`;
+
+  return (showPicker ? pickerCard : '') + infoCard + guideBtn + (items.length ? items.map(bizCard).join('') : '<div class="empty"><b>Нет бизнесов</b>Выберите город выше.</div>');
 }
 async function wHistory() {
   const d = await api('base.history');
@@ -868,11 +888,31 @@ const A = {
   wseg: d => { S.wseg = d.k; pages.work(); },
   tseg: d => { S.tseg = d.k; pages.top(); },
   aseg: d => { S.aseg = d.k; adminView(); },
-  adminOpen: () => open('admin', adminView),
+  toggleCityBox() {
+    S.showCityPicker = !S.showCityPicker;
+    pages.work();
+  },
+  async quickCity(d) {
+    const city = d.city;
+    if (!city) return;
+    S.showCityPicker = false;
+    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Загружаем подборку: ${esc(city)}…</p>`;
+    try {
+      const res = await api('base.today', { city });
+      S.todayData = res;
+      toast(`Подборка по г. ${res.city || city} готова!`);
+    } catch (e) { toast(e.message); }
+    pages.work();
+  },
   async getBase() {
     const city = val('city'); if (!city) return toast('Укажите город');
-    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы без сайта…</p>`;
-    try { await api('base.today', { city }); } catch (e) { toast(e.message); }
+    S.showCityPicker = false;
+    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы в г. ${esc(city)}…</p>`;
+    try {
+      const res = await api('base.today', { city });
+      S.todayData = res;
+      toast(`Подборка по г. ${res.city || city} готова!`);
+    } catch (e) { toast(e.message); }
     pages.work();
   },
   proofSheet(d) {
@@ -1079,10 +1119,6 @@ document.addEventListener('change', async e => {
 (async function boot() {
   try { tg?.ready(); tg?.expand(); tg?.disableVerticalSwipes?.(); } catch {}
   applyTheme(); tg?.onEvent?.('themeChanged', applyTheme);
-  if (!tg?.initData && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1' && !location.hostname.endsWith('.run.app') && !location.hostname.includes('google') && !location.hostname.includes('ais-')) {
-    view(`<div class="screen no-tab"><div class="brand">Hustlify</div><div class="empty"><b>Откройте в Telegram</b>Приложение работает только внутри бота.</div></div>`, { back: false });
-    return;
-  }
   if (!token) return renderAuth();
   loading();
   try { await enter(); } catch { logout(); }

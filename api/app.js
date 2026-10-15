@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { hashPassword, checkPassword, signToken, readToken, validateInitData } = require('../lib/security');
 const { notify } = require('../lib/telegram');
 const qwen = require('../lib/qwen');
-const { refillCity, buildMapLinks } = require('../lib/places');
+const { refillCity, buildMapLinks, normalizeCity } = require('../lib/places');
 const { chatWithAdminAgent, stats, PRODUCTS } = require('../lib/admin');
 
 // ───────── helpers
@@ -499,35 +499,77 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
   },
 
   // ── работа по базе
-  async 'base.today'({ user }, { city }) {
+  async 'base.today'({ user }, { city, refresh } = {}) {
     requireSeller(user);
     requireTrained(user);
     const day = today();
     const limit = await setting('daily_batch', 15);
-    // Сегодняшняя подборка + всё, что взято в работу в любой день
+
+    // Определяем целевой город: переданный явно, либо сохранённый у пользователя, либо Казань по умолчанию
+    const rawTarget = String(city || user.city || 'Казань').trim();
+    const target = normalizeCity(rawTarget);
+
     const load = async () => (await db.from('assignments').select('*, business:businesses(*)')
       .eq('user_id', user.id).or(`day.eq.${day},status.eq.in_work`).order('id')).data || [];
-    let list = await load();
-    const c = String(city || user.city || '').trim().slice(0, 60);
-    if (!list.some(a => a.day === day) && c) {
-      // 1. Переносим на сегодня невзятые подборки прошлых дней (только из этого города)
-      const { data: old } = await db.from('assignments').select('id, business:businesses(city_key)')
-        .eq('user_id', user.id).eq('status', 'assigned').lt('day', day);
-      const ids = (old || []).filter(a => a.business?.city_key === c.toLowerCase()).map(a => a.id);
-      if (ids.length) await db.from('assignments').update({ day }).in('id', ids);
-      list = await load();
 
-      // 2. Если сегодняшней подборки всё ещё нет, пополняем базу из OSM и выдаём новые
-      if (!list.some(a => a.day === day)) {
-        try { await refillCity(c); } catch (e) { console.error('refill', e.message); }
-        await claim(user.id, c, day, limit);
-        list = await load();
+    let list = await load();
+
+    const explicitCity = Boolean(city);
+    const userCityKey = String(user.city || '').toLowerCase().replace(/^(?:г|гор|город)\.?\s+/i, '');
+    const isDifferentCity = explicitCity && target.key !== userCityKey;
+
+    const matchesTargetCity = a => {
+      const bKey = String(a.business?.city_key || a.business?.city || '').toLowerCase();
+      return bKey === target.key || bKey.includes(target.key) || target.key.includes(bKey);
+    };
+
+    let cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
+
+    if (isDifferentCity || cityTodayItems.length === 0 || refresh) {
+      user.city = target.name;
+      await db.from('users').update({ city: target.name }).eq('id', user.id);
+
+      // При смене города убираем старые невзятые ('assigned') задания сегодняшнего дня другого города
+      if (isDifferentCity) {
+        const otherAssignedIds = list
+          .filter(a => a.day === day && a.status === 'assigned' && !matchesTargetCity(a))
+          .map(a => a.id);
+        if (otherAssignedIds.length) {
+          await db.from('assignments').delete().in('id', otherAssignedIds);
+        }
       }
-      await db.from('users').update({ city: c }).eq('id', user.id);
-      need(list.some(a => a.day === day), 404, 'В этом городе пока нет подходящих бизнесов без сайта. Попробуйте другой город');
+
+      // Пополняем базу для целевого города (OSM + гарантированная генерация)
+      try {
+        await refillCity(target.name, limit + 25);
+      } catch (e) {
+        console.error('[API] refillCity error:', e.message);
+      }
+
+      // Назначаем задания сотруднику
+      const countToClaim = Math.max(limit - cityTodayItems.length, 1);
+      await claim(user.id, target.name, day, countToClaim);
+
+      list = await load();
+      cityTodayItems = list.filter(a => a.day === day && matchesTargetCity(a));
     }
+
+    // Если всё ещё пусто (крайний случай) — гарантированно пополняем
+    if (!list.some(a => a.day === day)) {
+      await refillCity(target.name, limit + 25);
+      await claim(user.id, target.name, day, limit);
+      list = await load();
+    }
+
     const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
-    return { items: list.map(assignmentView), limit, city: user.city || '', has_today: list.some(a => a.day === day), guide_url: guideUrl };
+    const targetItems = list.filter(a => matchesTargetCity(a) || a.status === 'in_work');
+    return {
+      items: targetItems.map(assignmentView),
+      limit,
+      city: target.name,
+      has_today: targetItems.some(a => a.day === day),
+      guide_url: guideUrl,
+    };
   },
 
   async 'base.take'({ user }, { assignment_id }) {
