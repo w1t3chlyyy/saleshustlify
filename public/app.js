@@ -886,8 +886,8 @@ const A = {
     S.showCityPicker = !S.showCityPicker;
     pages.work();
   },
-  async getBase() {
-    const city = val('city'); if (!city) return toast('Укажите город');
+  async getBase(d = {}) {
+    const city = String(d.city || val('city')).trim(); if (!city) return toast('Укажите город');
     S.showCityPicker = false;
     $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы в г. ${esc(city)}…</p>`;
     try {
@@ -896,8 +896,11 @@ const A = {
       toast(res.items.length
         ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
         : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
-    } catch (e) { toast(e.message); }
-    pages.work();
+      pages.work();
+    } catch (e) {
+      toast(e.message);
+      $('#wbody').innerHTML = `${errBlock(e)}<button class="btn ghost" style="width:100%;margin-top:10px" data-act="getBase" data-city="${esc(city)}">Повторить поиск</button>`;
+    }
   },
   proofSheet(d) {
     const a = S.assign[d.id];

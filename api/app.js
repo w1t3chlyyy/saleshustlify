@@ -543,11 +543,12 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
         }
       }
 
-      // Пополняем базу для целевого города (OSM); при ошибке выдача попробует имеющиеся записи.
+      // Не возвращаем пустую успешную подборку, если поиск или запись базы завершились ошибкой.
       try {
         await refillCity(target.name, limit + 25);
       } catch (e) {
         console.error('[API] refillCity error:', e.message);
+        throw new Http(503, `Не удалось загрузить бизнесы для г. ${target.name}: ${e.message}`);
       }
 
       // Назначаем задания сотруднику
