@@ -508,11 +508,12 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { passed, reward, retry_at, ...r };
   },
 
-   async 'base.today'({ user }, { city } = {}) {
+      async 'base.today'({ user, aborted }, { city } = {}) {
     requireSeller(user);
     requireTrained(user);
     const limit = await setting('daily_batch', 15);
-    let batch = batchInfo(user);
+    const isAdmin = user.role === 'admin';
+    let batch = isAdmin ? { active: false } : batchInfo(user); // у админа нет 24-часового таймера
     let already = false;
     const wanted = typeof city === 'string' ? city.trim() : '';
 
@@ -524,18 +525,19 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       const day = today();
       let got = await claim(user.id, target.key, day, limit);
       if (got < limit) {
-        try {
-          await refillCity(target.name);
+                try {
+          await refillCity(target.name, { aborted });
         } catch (e) {
           console.error('[API] refillCity error:', e.message);
           if (!got) throw new Http(503, `Не удалось загрузить бизнесы для г. ${target.name}: ${e.message}`);
         }
+        if (aborted?.()) return { aborted: true, items: [], limit, city: '', locked_until: null, already: false, guide_url: '' };
         got += await claim(user.id, target.key, day, limit - got);
       }
             if (got > 0) {
         const patch = { city: target.name };
         // 24 часа действуют только для полноценной подборки; если нашлось мало, не блокируем
-        if (got >= Math.min(limit, 8)) patch.base_batch_at = new Date().toISOString();
+        if (!isAdmin && got >= Math.min(limit, 8)) patch.base_batch_at = new Date().toISOString();
         await db.from('users').update(patch).eq('id', user.id);
         user.city = target.name;
         if (patch.base_batch_at) { user.base_batch_at = patch.base_batch_at; batch = batchInfo(user); }
@@ -1071,8 +1073,10 @@ module.exports = async (req, res) => {
     const handler = H[action];
     need(handler, 404, 'Неизвестное действие');
 
-    const tgUser = validateInitData(req.headers['x-init-data'], process.env.BOT_TOKEN);
-    const ctx = { tgUser };
+        const tgUser = validateInitData(req.headers['x-init-data'], process.env.BOT_TOKEN);
+    let dead = false;
+    res.on('close', () => { if (!res.writableEnded) dead = true; });
+    const ctx = { tgUser, aborted: () => dead };
 
     if (!action.startsWith('auth.')) {
       need(tgUser, 401, 'Откройте приложение через Telegram');
