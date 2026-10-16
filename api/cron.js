@@ -12,11 +12,11 @@ module.exports = async (req, res) => {
   // 1. Пополняем базу бизнесов в городах, где сотрудники работали за последнюю неделю
   const since = new Date(Date.now() - 7 * 864e5).toISOString();
   const { data } = await db.from('users').select('city').not('city', 'is', null).gte('last_seen', since);
-  const cities = [...new Set((data || []).map(r => r.city))].slice(0, 5);
+  const cities = [...new Set((data || []).map(r => r.city))].slice(0, 3);
   for (const city of cities) {
     try {
       const { count } = await db.from('businesses').select('*', { count: 'exact', head: true }).eq('city_key', city.trim().toLowerCase());
-      if ((count || 0) < 80) report.refilled[city] = await refillCity(city);
+      if ((count || 0) < 40) report.refilled[city] = await refillCity(city);
     } catch (e) { report.refilled[city] = 'error: ' + e.message; }
   }
 
