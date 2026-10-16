@@ -1,4 +1,5 @@
 {
+  "regions": ["fra1"],
   "functions": {
     "api/app.js":  { "maxDuration": 60 },
     "api/cron.js": { "maxDuration": 60 },
