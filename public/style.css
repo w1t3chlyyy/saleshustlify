@@ -182,3 +182,6 @@ input[type=file]{height:auto;padding:12px 16px}
 .row[disabled]{pointer-events:none}
 .biz[data-act]:active{opacity:.7}
 a.btn{text-decoration:none;flex:1}
+.busy{opacity:.55;pointer-events:none}
+html.loading body::after{content:'';position:fixed;top:0;left:0;height:3px;width:40%;background:var(--fg);z-index:100;animation:ld 1s ease-in-out infinite}
+@keyframes ld{from{transform:translateX(-100%)}to{transform:translateX(260%)}}
