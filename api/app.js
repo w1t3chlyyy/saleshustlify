@@ -816,6 +816,49 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { ok: true };
   },
 
+  // ── вывод баланса
+  async 'payout.request'({ user }, { amount, bank, requisites }) {
+    const sum = Math.round(Number(amount) * 100) / 100;
+    need(!isNaN(sum) && sum >= 1000, 400, 'Минимальная сумма для вывода — 1 000 ₽');
+    const curBal = Number(user.balance || 0);
+    need(curBal >= sum, 400, `Недостаточно средств. Ваш баланс: ${curBal} ₽`);
+    const b = String(bank || '').trim();
+    need(b.length >= 2, 400, 'Укажите банк (например: Т-Банк, Сбер, СБП)');
+    const reqs = String(requisites || '').trim();
+    need(reqs.length >= 4, 400, 'Укажите реквизиты (номер карты или телефон для СБП)');
+
+    const { data: pending } = await db.from('payout_requests').select('id').eq('user_id', user.id).eq('status', 'pending');
+    need(!pending?.length, 409, 'У вас уже есть заявка на вывод на рассмотрении');
+
+    await db.rpc('add_money', { p_user: user.id, p_amount: -sum });
+
+    const { data, error } = await db.from('payout_requests').insert({
+      user_id: user.id,
+      amount: sum,
+      bank: b.slice(0, 80),
+      requisites: reqs.slice(0, 120),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    }).select().single();
+
+    if (error) {
+      await db.rpc('add_money', { p_user: user.id, p_amount: sum });
+      throw error;
+    }
+
+    await notifyAdmins(`💸 Новая заявка на вывод!\nСотрудник: ${user.full_name} (@${user.login})\nСумма: ${sum} ₽\nБанк: ${b}\nРеквизиты: ${reqs}\nРаздел: «Проверка» в панели админа`);
+    if (user.tg_id) {
+      await notify(user.tg_id, `Заявка на вывод ${sum} ₽ на ${b} (${reqs}) принята! Руководитель проверит и переведёт средства.`);
+    }
+
+    return { ok: true, payout: data, new_balance: curBal - sum };
+  },
+
+  async 'payout.list'({ user }) {
+    const { data } = await db.from('payout_requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(20);
+    return { items: data || [] };
+  },
+
   // ── продвигающие: видео
   async 'promo.test'({ user }) {
     requirePromoter(user);
@@ -1101,6 +1144,41 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { ok: true, approve };
   },
 
+  async 'admin.payouts_queue'() {
+    const { data } = await db.from('payout_requests').select('*, user:users(full_name,login,tg_id)')
+      .eq('status', 'pending').order('created_at', { ascending: false }).limit(50);
+    return { items: data || [] };
+  },
+
+  async 'admin.payout_decide'({ user: admin }, { id, approve, note }) {
+    const { data: p } = await db.from('payout_requests').select('*, user:users(id,full_name,login,tg_id)').eq('id', id).maybeSingle();
+    need(p, 404, 'Заявка не найдена');
+    need(p.status === 'pending', 409, 'Заявка уже рассмотрена');
+    const n = String(note || '').slice(0, 500) || null;
+    if (approve) {
+      await db.from('payout_requests').update({
+        status: 'approved',
+        admin_note: n,
+        reviewed_at: new Date().toISOString()
+      }).eq('id', id);
+      if (p.user?.tg_id) {
+        await notify(p.user.tg_id, `Ваша выплата ${p.amount} ₽ на ${p.bank} (${p.requisites}) успешно отправлена!${n ? `\nКомментарий: ${n}` : ''}`);
+      }
+    } else {
+      await db.rpc('add_money', { p_user: p.user_id, p_amount: Number(p.amount) });
+      await db.from('payout_requests').update({
+        status: 'rejected',
+        admin_note: n,
+        reviewed_at: new Date().toISOString()
+      }).eq('id', id);
+      if (p.user?.tg_id) {
+        await notify(p.user.tg_id, `Заявка на вывод ${p.amount} ₽ отклонена.${n ? ` Причина: ${n}.` : ''} Средства возвращены на ваш баланс.`);
+      }
+    }
+    await db.from('audit_log').insert({ admin_id: admin.id, action: 'payout_decide', payload: { payout_id: id, approve, note: n } });
+    return { ok: true, approve };
+  },
+
   async 'admin.shop.save'({ user: admin }, { id, title, price, description, kind, action_instructions, percent, days, stock }) {
     const t = String(title || '').trim();
     need(t, 400, 'Укажите название товара');
@@ -1158,8 +1236,8 @@ module.exports = async (req, res) => {
         throw new Http(401, 'Нужно войти');
       }
       need(!action.startsWith('admin.') || user.role === 'admin', 403, 'Нет доступа');
-      // Без пройденного обучения доступны только профиль, обучение, тесты и практика
-      if (!/^(me$|role\.|learn\.|quiz\.|practice\.|promo\.test$|promo\.submit$)/.test(action)) requireTrained(user);
+      // Без пройденного обучения доступны только профиль, обучение, тесты, практика и вывод
+      if (!/^(me$|role\.|learn\.|quiz\.|practice\.|promo\.test$|promo\.submit$|payout\.)/.test(action)) requireTrained(user);
       ctx.user = user;
     }
     res.json(await handler(ctx, p));

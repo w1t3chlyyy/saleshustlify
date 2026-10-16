@@ -718,14 +718,23 @@ pages.shop = async () => {
 
 // ───────── profile
 pages.me = async () => {
-  const m = await api('me'); S.me = m; S.user = m.user;
+  const [m, pay] = await Promise.all([api('me'), api('payout.list')]);
+  S.me = m; S.user = m.user;
   const u = m.user, ini = u.full_name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  const payouts = pay?.items || [];
+  const PAYS = { pending: 'На рассмотрении', approved: 'Выплачено', rejected: 'Отклонено' };
   view(`<div class="screen">
     <div class="avatar">${esc(ini)}</div>
     <h1 class="title">${esc(u.full_name)}</h1><p class="sub">@${esc(u.login)}</p>
     <div class="list">
       <div class="row"><div class="grow mut">Должность</div><b>${esc(u.position)}</b></div>
-      <div class="row"><div class="grow mut">Баланс</div><b>${money(u.balance)}</b></div>
+      <div class="row">
+        <div class="grow">
+          <div class="mut">Баланс</div>
+          <b style="font-size:16px">${money(u.balance)}</b>
+        </div>
+        <button class="btn sm" data-act="payoutSheet">Вывести</button>
+      </div>
       <div class="row"><div class="grow mut">Заработано всего</div><b>${money(u.earned_total)}</b></div>
       <div class="row"><div class="grow mut">HustlifyCoin</div><b>${u.coins}</b></div>
       ${u.track === 'promoter'
@@ -733,6 +742,18 @@ pages.me = async () => {
         : `<div class="row"><div class="grow mut">Процент с продаж</div><b>${m.percent}%${m.boost ? ` (с бустом +${m.boost})` : ''}</b></div>
            <div class="row"><div class="grow mut">Принято работ</div><b>${m.approved_total}</b></div>`}
     </div>
+    ${payouts.length ? `
+      <h2 class="h2">Заявки на вывод</h2>
+      <div class="list">
+        ${payouts.map(p => `
+          <div class="row">
+            <div class="grow">
+              <div class="t">${money(p.amount)} · ${esc(p.bank)}</div>
+              <div class="d">${esc(p.requisites)}${p.admin_note ? ` · ${esc(p.admin_note)}` : ''} · ${new Date(p.created_at).toLocaleDateString('ru-RU')}</div>
+            </div>
+            <span class="pill ${p.status === 'approved' ? 'solid' : ''}">${PAYS[p.status] || p.status}</span>
+          </div>`).join('')}
+      </div>` : ''}
     <div class="list" style="margin-top:16px">
       ${u.role === 'admin' ? `<button class="row" data-act="adminOpen">${I.shield}<div class="grow t">Панель администратора</div>${I.chev}</button>` : ''}
       <button class="row" data-act="logout">${I.out}<div class="grow t">Выйти</div></button>
@@ -826,8 +847,18 @@ async function aCatalog() {
 }
 
 async function aQueue() {
-  const [d, v, p, pur] = await Promise.all([api('admin.queue'), api('admin.vqueue'), api('admin.plans'), api('admin.purchases_queue')]);
+  const [d, v, p, pur, pay] = await Promise.all([
+    api('admin.queue'),
+    api('admin.vqueue'),
+    api('admin.plans'),
+    api('admin.purchases_queue'),
+    api('admin.payouts_queue'),
+  ]);
   const sec = (t, a) => a.length ? `<h2 class="h2">${t}</h2>` + a.join('') : '';
+  const pays = (pay.items || []).map(o => `<div class="biz"><h3>Вывод: ${money(o.amount)}</h3>
+    <div class="meta">${esc(o.user?.full_name)}, @${esc(o.user?.login)} · <b>${esc(o.bank)}</b></div>
+    <div class="note"><b>Реквизиты:</b> ${esc(o.requisites)}</div>
+    <div class="foot"><button class="btn ghost sm" data-act="payReject" data-id="${o.id}">Отклонить</button><button class="btn sm" data-act="payApprove" data-id="${o.id}">Выплачено</button></div></div>`);
   const works = d.items.map(a => `<div class="biz"><h3>${esc(a.business?.name)}</h3>
     <div class="meta">${esc(a.user?.full_name)}, @${esc(a.user?.login)}</div>
     <div class="note">${esc(a.proof_text)}</div>${a.proof_url ? `<img class="proof" src="${esc(a.proof_url)}" alt="Доказательство">` : ''}
@@ -847,8 +878,8 @@ async function aQueue() {
     ${o.instructions ? `<div class="note"><b>Инструкция:</b> ${esc(o.instructions)}</div>` : ''}
     <div class="foot"><button class="btn ghost sm" data-act="purReject" data-id="${o.id}">Отклонить и вернуть коины</button><button class="btn sm" data-act="purApprove" data-id="${o.id}">Выполнено</button></div></div>`);
 
-  $('#abody').innerHTML = works.length || vids.length || plans.length || purs.length
-    ? sec('Работы по базе', works) + sec('Видео', vids) + sec('Переход на Pro', plans) + sec('Покупки в магазине (требуют вмешательства)', purs)
+  $('#abody').innerHTML = pays.length || works.length || vids.length || plans.length || purs.length
+    ? sec('Заявки на вывод (рубли)', pays) + sec('Работы по базе', works) + sec('Видео', vids) + sec('Переход на Pro', plans) + sec('Покупки в магазине (требуют вмешательства)', purs)
     : `<div class="empty"><b>Очередь пуста</b>Новые заявки появятся здесь.</div>`;
 }
 function aAi() {
@@ -1140,6 +1171,47 @@ const A = {
   async purRejectSend(d) {
     await api('admin.purchase_decide', { id: Number(d.id), approve: false, note: val('pr_note') });
     closeSheet(); toast('Отклонено, коины возвращены'); aQueue();
+  },
+  payoutSheet() {
+    const bal = Number(S.user?.balance || 0);
+    sheet(`<h3>Вывод баланса</h3>
+      <p class="mut small" style="margin:0 0 14px">Вывод доступен от 1 000 ₽. Выплата осуществляется в рублях на карту или СБП.</p>
+      <div class="card stat" style="margin-bottom:14px"><b>${money(bal)}</b><span>Доступно к выводу</span></div>
+      <label class="field"><span>Сумма вывода, ₽ (от 1 000 ₽)</span><input id="pay_sum" type="number" inputmode="decimal" placeholder="1000" min="1000" max="${bal}"></label>
+      <label class="field"><span>Банк</span><input id="pay_bank" placeholder="Например: Т-Банк, Сбер, СБП, ВТБ, Альфа"></label>
+      <label class="field"><span>Реквизиты</span><input id="pay_reqs" placeholder="Номер карты или телефон для СБП"></label>
+      <button class="btn" data-act="payoutSubmit" style="margin-top:8px" ${bal < 1000 ? 'disabled' : ''}>${bal < 1000 ? 'Нужно минимум 1 000 ₽' : 'Запросить вывод'}</button>`);
+  },
+  async payoutSubmit() {
+    const sum = Number(val('pay_sum'));
+    const bank = val('pay_bank');
+    const requisites = val('pay_reqs');
+    if (!sum || sum < 1000) return toast('Минимальная сумма вывода — 1 000 ₽');
+    if (!bank) return toast('Укажите банк');
+    if (!requisites) return toast('Укажите реквизиты для перевода');
+    try {
+      const r = await api('payout.request', { amount: sum, bank, requisites });
+      closeSheet();
+      if (S.user) S.user.balance = r.new_balance;
+      toast('Заявка на вывод отправлена руководителю');
+      pages.me();
+    } catch (e) { toast(e.message); }
+  },
+  async payApprove(d) {
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm('Подтвердить выплату сотруднику?', r)) : confirm('Подтвердить выплату сотруднику?');
+    if (!ok) return;
+    await api('admin.payout_decide', { id: Number(d.id), approve: true });
+    toast('Выплата отмечена как выполненная');
+    aQueue();
+  },
+  payReject(d) {
+    sheet(`<h3>Причина отклонения</h3><p class="mut small">Средства будут автоматически возвращены на баланс сотрудника.</p><label class="field"><textarea id="pay_r_note" placeholder="Причина отказа (например: неверные реквизиты)"></textarea></label><button class="btn" data-act="payRejectSend" data-id="${d.id}">Отклонить и вернуть баланс</button>`);
+  },
+  async payRejectSend(d) {
+    await api('admin.payout_decide', { id: Number(d.id), approve: false, note: val('pay_r_note') });
+    closeSheet();
+    toast('Заявка отклонена, средства возвращены');
+    aQueue();
   },
   async quizClear() {
     await api('admin.quiz.clear');

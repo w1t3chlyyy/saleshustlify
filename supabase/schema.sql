@@ -175,6 +175,18 @@ create table if not exists plan_requests (
   decided_at timestamptz
 );
 
+create table if not exists payout_requests (
+  id bigserial primary key,
+  user_id uuid not null references users(id) on delete cascade,
+  amount numeric(12,2) not null check (amount >= 1000),
+  bank text not null,
+  requisites text not null,
+  status text not null default 'pending' check (status in ('pending','approved','rejected')),
+  admin_note text,
+  created_at timestamptz not null default now(),
+  reviewed_at timestamptz
+);
+
 -- ───────── Коины и магазин
 create table if not exists coin_ledger (
   id bigserial primary key,
@@ -328,6 +340,7 @@ alter table sales enable row level security;
 alter table video_tasks enable row level security;
 alter table video_submissions enable row level security;
 alter table plan_requests enable row level security;
+alter table payout_requests enable row level security;
 alter table coin_ledger enable row level security;
 alter table shop_items enable row level security;
 alter table promo_codes enable row level security;
