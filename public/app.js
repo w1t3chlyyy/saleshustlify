@@ -61,28 +61,33 @@ function applyTheme() {
   try { tg?.setHeaderColor(dark ? '#000000' : '#ffffff'); tg?.setBackgroundColor(dark ? '#000000' : '#ffffff'); } catch {}
 }
 
-async function api(action, data = {}) {
+async function api(action, data = {}, signal) {
   let r, j;
+  const ctl = new AbortController();
+  const onAbort = () => ctl.abort();
+  signal?.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => ctl.abort(), 70000);
   try {
-       const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 70000);
-    try {
-      r = await fetch('/api/app', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-init-data': tg?.initData || '', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
-        body: JSON.stringify({ action, ...data }),
-        signal: ctl.signal,
-      });
-      j = await r.json();
-    } finally { clearTimeout(timer); }
-  } catch { throw new Error('Нет связи с сервером или он слишком долго отвечает. Попробуйте ещё раз'); }
+    r = await fetch('/api/app', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-init-data': tg?.initData || '', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+      body: JSON.stringify({ action, ...data }),
+      signal: ctl.signal,
+    });
+    j = await r.json();
+  } catch {
+    if (signal?.aborted) { const x = new Error('Поиск отменён'); x.aborted = true; throw x; }
+    throw new Error('Нет связи с сервером или он слишком долго отвечает. Попробуйте ещё раз');
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
   if (!r.ok) {
     if (r.status === 401 && !action.startsWith('auth.') && token) { logout(true); }
     throw new Error(j.error || 'Ошибка');
   }
   return j;
 }
-
 let toastT, cooldownT;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -124,6 +129,7 @@ function bindCooldown(retryIso) {
 // Каждый экран получает сверху кнопку «Назад», если есть куда возвращаться
 function view(html, { tabbar = false, back: showBack = true } = {}) {
   clearInterval(cooldownT);
+  if (S.searchCtl) { S.searchCtl.abort(); S.searchCtl = null; }
   closeSheet();
   const bar = showBack && NAV.length
     ? `<div class="topbar"><div class="inner"><button data-act="back" aria-label="Назад">${I.back}Назад</button></div></div>`
@@ -896,25 +902,30 @@ const A = {
     S.showCityPicker = !S.showCityPicker;
     pages.work();
   },
-    async getBase(d = {}) {
+      async getBase(d = {}) {
     const city = String(d.city || val('city')).trim(); if (!city) return toast('Укажите город');
-    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы в г. ${esc(city)}…</p>`;
+    if (S.searchCtl) return;
+    const ctl = new AbortController(); S.searchCtl = ctl;
+    $('#wbody').innerHTML = `<div class="spin"></div><p class="mut small" style="text-align:center">Ищем бизнесы в г. ${esc(city)}…<br>Не закрывайте приложение и не переходите на другой экран, пока идёт поиск</p>`;
     try {
-      const res = await api('base.today', { city });
+      const res = await api('base.today', { city }, ctl.signal);
+      S.searchCtl = null;
       S.todayData = res;
       S.guideUrl = res.guide_url || S.guideUrl;
       const left = res.locked_until ? fmtLeft(new Date(res.locked_until).getTime() - Date.now()) : '';
       toast(res.already
         ? `Подборка уже получена. Новую можно взять через ${left}`
-                : res.items.length
-          ? (res.locked_until
-            ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
-            : `Пока нашлось только ${res.items.length}. Нажмите «Получить подборку» позже: поиск продолжится`)
+        : res.items.length
+          ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
           : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
-      pages.work();
+      const box = $('#wbody');
+      if (box) box.innerHTML = await wToday();
     } catch (e) {
+      if (e.aborted) return;
+      S.searchCtl = null;
       toast(e.message);
-      $('#wbody').innerHTML = `${errBlock(e)}<button class="btn ghost" style="width:100%;margin-top:10px" data-act="getBase" data-city="${esc(city)}">Повторить поиск</button>`;
+      const box = $('#wbody');
+      if (box) box.innerHTML = `${errBlock(e)}<button class="btn ghost" style="width:100%;margin-top:10px" data-act="getBase" data-city="${esc(city)}">Повторить поиск</button>`;
     }
   },
   proofSheet(d) {
