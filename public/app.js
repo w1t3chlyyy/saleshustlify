@@ -1,5 +1,7 @@
 (() => {
 'use strict';
+if (window.__hustlify_app_loaded) return;
+window.__hustlify_app_loaded = true;
 const tg = window.Telegram?.WebApp;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -350,7 +352,10 @@ function renderTabbar() {
   $('#tabbar').innerHTML = TABS.map(([k, l, i]) => `<button data-act="tab" data-k="${k}" class="${S.tab === k ? 'on' : ''}" aria-label="${l}">${i}<span>${l}</span></button>`).join('');
 }
   async function go(tab) {
-  if (!S.user) return renderAuth();
+  if (!S.user) {
+    if (token) { loading(); await safeEnter(); return; }
+    return renderAuth();
+  }
   if (!S.user.training_done && S.user.role !== 'admin') return backTo('learn', learnHome);
   S.tab = tab; renderTabbar();
   try { await pages[tab](); } catch (e) { view(`<div class="screen">${errBlock(e)}</div>`, { tabbar: true }); }
@@ -718,7 +723,7 @@ pages.shop = async () => {
 
 // ───────── profile
 pages.me = async () => {
-  const [m, pay] = await Promise.all([api('me'), api('payout.list')]);
+  const [m, pay] = await Promise.all([api('me'), api('payout.list').catch(() => ({ items: [] }))]);
   S.me = m; S.user = m.user;
   const u = m.user, ini = u.full_name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
   const payouts = pay?.items || [];

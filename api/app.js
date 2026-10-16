@@ -827,7 +827,10 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const reqs = String(requisites || '').trim();
     need(reqs.length >= 4, 400, 'Укажите реквизиты (номер карты или телефон для СБП)');
 
-    const { data: pending } = await db.from('payout_requests').select('id').eq('user_id', user.id).eq('status', 'pending');
+    const { data: pending, error: pendErr } = await db.from('payout_requests').select('id').eq('user_id', user.id).eq('status', 'pending');
+    if (pendErr && pendErr.code === 'PGRST205') {
+      throw new Http(500, 'Таблица заявок на вывод не создана в Supabase. Примените файл supabase/migrations/004_payout_requests.sql в SQL Editor Supabase');
+    }
     need(!pending?.length, 409, 'У вас уже есть заявка на вывод на рассмотрении');
 
     await db.rpc('add_money', { p_user: user.id, p_amount: -sum });
@@ -843,6 +846,9 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
 
     if (error) {
       await db.rpc('add_money', { p_user: user.id, p_amount: sum });
+      if (error.code === 'PGRST205') {
+        throw new Http(500, 'Таблица заявок на вывод не создана в Supabase. Примените файл supabase/migrations/004_payout_requests.sql в SQL Editor Supabase');
+      }
       throw error;
     }
 
@@ -855,7 +861,12 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
   },
 
   async 'payout.list'({ user }) {
-    const { data } = await db.from('payout_requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(20);
+    const { data, error } = await db.from('payout_requests').select('*').eq('user_id', user.id).order('created_at', { ascending: false }).limit(20);
+    if (error) {
+      if (error.code === 'PGRST205') return { items: [] };
+      console.error('[payout.list error]:', error.message || error);
+      return { items: [] };
+    }
     return { items: data || [] };
   },
 
@@ -1145,13 +1156,21 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
   },
 
   async 'admin.payouts_queue'() {
-    const { data } = await db.from('payout_requests').select('*, user:users(full_name,login,tg_id)')
+    const { data, error } = await db.from('payout_requests').select('*, user:users(full_name,login,tg_id)')
       .eq('status', 'pending').order('created_at', { ascending: false }).limit(50);
+    if (error) {
+      if (error.code === 'PGRST205') return { items: [] };
+      console.error('[admin.payouts_queue error]:', error.message || error);
+      return { items: [] };
+    }
     return { items: data || [] };
   },
 
   async 'admin.payout_decide'({ user: admin }, { id, approve, note }) {
-    const { data: p } = await db.from('payout_requests').select('*, user:users(id,full_name,login,tg_id)').eq('id', id).maybeSingle();
+    const { data: p, error } = await db.from('payout_requests').select('*, user:users(id,full_name,login,tg_id)').eq('id', id).maybeSingle();
+    if (error && error.code === 'PGRST205') {
+      throw new Http(500, 'Таблица заявок на вывод не создана в Supabase. Примените файл supabase/migrations/004_payout_requests.sql в SQL Editor Supabase');
+    }
     need(p, 404, 'Заявка не найдена');
     need(p.status === 'pending', 409, 'Заявка уже рассмотрена');
     const n = String(note || '').slice(0, 500) || null;
