@@ -63,12 +63,16 @@ function applyTheme() {
   try { tg?.setHeaderColor(dark ? '#000000' : '#ffffff'); tg?.setBackgroundColor(dark ? '#000000' : '#ffffff'); } catch {}
 }
 
+let pending = 0;
+const progress = on => { pending += on ? 1 : -1; document.documentElement.classList.toggle('loading', pending > 0); };
+
 async function api(action, data = {}, signal) {
   let r, j;
   const ctl = new AbortController();
   const onAbort = () => ctl.abort();
   signal?.addEventListener('abort', onAbort);
   const timer = setTimeout(() => ctl.abort(), 70000);
+  progress(true);
   try {
     r = await fetch('/api/app', {
       method: 'POST',
@@ -80,7 +84,8 @@ async function api(action, data = {}, signal) {
   } catch {
     if (signal?.aborted) { const x = new Error('Поиск отменён'); x.aborted = true; throw x; }
     throw new Error('Нет связи с сервером или он слишком долго отвечает. Попробуйте ещё раз');
-  } finally {
+    } finally {
+    progress(false);
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
   }
@@ -357,7 +362,8 @@ function renderTabbar() {
     return renderAuth();
   }
   if (!S.user.training_done && S.user.role !== 'admin') return backTo('learn', learnHome);
-  S.tab = tab; renderTabbar();
+   S.tab = tab; renderTabbar();
+  view(`<div class="screen"><div class="spin"></div></div>`, { tabbar: true, back: false });
   try { await pages[tab](); } catch (e) { view(`<div class="screen">${errBlock(e)}</div>`, { tabbar: true }); }
 }
 
@@ -922,8 +928,9 @@ async function aiSend(text) {
 // ───────── actions
 const A = {
   back: () => back(),
-  tab: d => open('tab:' + d.k, () => go(d.k)),
+  tab: d => { NAV.length = 0; cur = { key: 'tab:' + d.k, fn: () => go(d.k) }; return go(d.k); },
   logout: () => logout(),
+  adminOpen: () => open('admin', adminView),
   authMode: d => { S.authMode = d.k; renderAuth(); },
   quickLogin(d) {
     if ($('#a_login')) $('#a_login').value = d.l;
@@ -1273,11 +1280,14 @@ const A = {
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
-  if (!el || el.disabled) return;
+  if (!el || el.disabled || el.dataset.busy) return;
   if (el.tagName === 'A') e.preventDefault();
   const fn = A[el.dataset.act]; if (!fn) return;
   haptic();
-  Promise.resolve(fn(el.dataset, el)).catch(err => toast(err.message));
+  el.dataset.busy = '1'; el.classList.add('busy');
+  Promise.resolve(fn(el.dataset, el))
+    .catch(err => toast(err.message))
+    .finally(() => { delete el.dataset.busy; el.classList.remove('busy'); });
 });
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || !e.target.dataset?.enter) return;
