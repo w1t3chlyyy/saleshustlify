@@ -44,9 +44,11 @@ const mapLinks = b => buildMapLinks(b);
 
 async function percentFor(u) {
   const since = new Date(Date.now() - 30 * 864e5).toISOString();
-  const { count } = await db.from('assignments').select('*', { count: 'exact', head: true })
-    .eq('user_id', u.id).eq('status', 'approved').gte('reviewed_at', since);
-  const tiers = await setting('percent_tiers', [[0, 5], [8, 7], [20, 10], [40, 12]]);
+  const [{ count }, tiers] = await Promise.all([
+    db.from('assignments').select('*', { count: 'exact', head: true })
+      .eq('user_id', u.id).eq('status', 'approved').gte('reviewed_at', since),
+    setting('percent_tiers', [[0, 5], [8, 7], [20, 10], [40, 12]]),
+  ]);
   let base = tiers[0]?.[1] ?? 5;
   for (const [n, pc] of tiers) if ((count || 0) >= n) base = pc;
   const boost = u.boost_until && new Date(u.boost_until) > new Date() ? Number(u.percent_boost) : 0;
@@ -252,30 +254,40 @@ const H = {
   },
 
   // ── профиль
-  async me({ user }) {
-    await db.from('users').update({ last_seen: new Date().toISOString() }).eq('id', user.id);
-    const pct = await percentFor(user);
-       const bi = batchInfo(user);
+    async me({ user }) {
+    await setting('_warm', null); // один запрос за настройками, дальше всё из кэша
+    const bi = batchInfo(user);
     const day = bi.active ? bi.day : today();
-    const { data: todays } = await db.from('assignments').select('status').eq('user_id', user.id).eq('day', day).neq('status', 'skipped');
-    const { count: leads } = await db.from('leads').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
-    const { count: won } = await db.from('assignments').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'approved');
-    const { count: salesCount } = await db.from('sales').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
-    const requiredSales = Number(await setting('required_clients_for_base', 3)) || 3;
-    const baseUnlocked = user.role === 'admin' || (salesCount || 0) >= requiredSales;
+    const cnt = (t, f) => f(db.from(t).select('*', { count: 'exact', head: true }));
+    const [pct, todays, leads, won, sales, requiredRaw, mentor, retryAt, guide, noGuide] = await Promise.all([
+      percentFor(user),
+      db.from('assignments').select('status').eq('user_id', user.id).eq('day', day).neq('status', 'skipped'),
+      cnt('leads', q => q.eq('user_id', user.id)),
+      cnt('assignments', q => q.eq('user_id', user.id).eq('status', 'approved')),
+      cnt('sales', q => q.eq('user_id', user.id)),
+      setting('required_clients_for_base', 3),
+      setting('mentor_username', process.env.MENTOR_USERNAME || ''),
+      practiceRetryAt(user),
+      setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
+      setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11'),
+      db.from('users').update({ last_seen: new Date().toISOString() }).eq('id', user.id),
+    ]);
+    const requiredSales = Number(requiredRaw) || 3;
+    const salesCount = sales.count || 0;
+    const list = todays.data || [];
     return {
       user: pub(user), ...pct,
-      today_total: todays?.length || 0,
-      today_done: (todays || []).filter(a => ['submitted', 'approved'].includes(a.status)).length,
-      leads: leads || 0, approved_total: won || 0,
-      sales_count: salesCount || 0,
-      sales_needed: Math.max(0, requiredSales - (salesCount || 0)),
+      today_total: list.length,
+      today_done: list.filter(a => ['submitted', 'approved'].includes(a.status)).length,
+      leads: leads.count || 0, approved_total: won.count || 0,
+      sales_count: salesCount,
+      sales_needed: Math.max(0, requiredSales - salesCount),
       required_sales: requiredSales,
-      base_unlocked: baseUnlocked,
-      mentor: mentorUsername(await setting('mentor_username', process.env.MENTOR_USERNAME || '')),
-      practice_retry_at: await practiceRetryAt(user),
-      guide_url: await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
-      no_base_guide_url: await setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11'),
+      base_unlocked: user.role === 'admin' || salesCount >= requiredSales,
+      mentor: mentorUsername(mentor),
+      practice_retry_at: retryAt,
+      guide_url: guide,
+      no_base_guide_url: noGuide,
     };
   },
 
