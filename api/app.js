@@ -84,6 +84,7 @@ async function multipliers(user) {
 const rewardOf = (t, k) => ({ money: Math.round(Number(t.reward_money) * k.m * 100) / 100, coins: Math.round(t.reward_coins * k.c) });
 
 const PRACTICE_COOLDOWN_MS = 12 * 3600 * 1000;
+const MIN_BATCH = 5; // меньше этого подборку не фиксируем на 24 часа
 const BATCH_MS = 24 * 3600 * 1000;
 const batchInfo = user => {
   const t = user.base_batch_at ? new Date(user.base_batch_at).getTime() : 0;
@@ -256,7 +257,7 @@ const H = {
     const pct = await percentFor(user);
        const bi = batchInfo(user);
     const day = bi.active ? bi.day : today();
-    const { data: todays } = await db.from('assignments').select('status').eq('user_id', user.id).eq('day', day);
+    const { data: todays } = await db.from('assignments').select('status').eq('user_id', user.id).eq('day', day).neq('status', 'skipped');
     const { count: leads } = await db.from('leads').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
     const { count: won } = await db.from('assignments').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'approved');
     return {
@@ -519,13 +520,23 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
 
     if (wanted && batch.active) {
       already = true; // подборка уже на руках, новая только через 24 часа
-    } else if (wanted) {
+       } else if (wanted) {
       const target = normalizeCity(wanted);
-      await db.from('assignments').delete().eq('user_id', user.id).eq('status', 'assigned');
       const day = today();
-      let got = await claim(user.id, target.key, day, limit);
+      const sameCity = !isAdmin && user.city && normalizeCity(user.city).key === target.key;
+      // Невзятые карточки не удаляем, а помечаем skipped: так они больше никогда не вернутся этому сотруднику
+      let sq = db.from('assignments').update({ status: 'skipped' }).eq('user_id', user.id).eq('status', 'assigned');
+      if (sameCity) sq = sq.lt('day', day); // сегодняшние в том же городе оставляем и дополняем
+      await sq;
+      let got = 0;
+      if (sameCity) {
+        const { count } = await db.from('assignments').select('*', { count: 'exact', head: true })
+          .eq('user_id', user.id).eq('status', 'assigned').eq('day', day);
+        got = count || 0;
+      }
+      if (got < limit) got += await claim(user.id, target.key, day, limit - got);
       if (got < limit) {
-                try {
+        try {
           await refillCity(target.name, { aborted });
         } catch (e) {
           console.error('[API] refillCity error:', e.message);
@@ -537,7 +548,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
             if (got > 0) {
         const patch = { city: target.name };
         // 24 часа действуют только для полноценной подборки; если нашлось мало, не блокируем
-        if (!isAdmin && got >= Math.min(limit, 8)) patch.base_batch_at = new Date().toISOString();
+        if (!isAdmin && got >= MIN_BATCH) patch.base_batch_at = new Date().toISOString();
         await db.from('users').update(patch).eq('id', user.id);
         user.city = target.name;
         if (patch.base_batch_at) { user.base_batch_at = patch.base_batch_at; batch = batchInfo(user); }
@@ -548,7 +559,7 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     q = q.or(`day.eq.${batch.active ? batch.day : today()},status.eq.in_work`);
     const { data, error } = await q.order('id');
     if (error) throw error;
-    const items = (data || []).filter(a => a.business && a.business.source === '2gis' && !a.business.has_site);
+    const items = (data || []).filter(a => a.status !== 'skipped' && a.business && a.business.source === '2gis' && !a.business.has_site && !a.business.is_closed);
     return {
       items: items.map(assignmentView),
       limit,
@@ -576,6 +587,23 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     return { ok: true, replaced };
   },
 
+  async 'base.report_closed'({ user }, { assignment_id }) {
+    requireSeller(user);
+    requireTrained(user);
+    const { data: a } = await db.from('assignments').select('id,status,business_id').eq('id', assignment_id).eq('user_id', user.id).maybeSingle();
+    need(a, 404, 'Задание не найдено');
+    need(['assigned', 'in_work'].includes(a.status), 409, 'Работа уже отправлена на проверку');
+    await db.from('businesses').update({ is_closed: true }).eq('id', a.business_id);
+    await db.from('assignments').delete().eq('id', a.id);
+    await db.from('audit_log').insert({ admin_id: user.id, action: 'closed_report', payload: { business_id: a.business_id } });
+    let replaced = 0;
+    if (user.city) {
+      const batch = user.role === 'admin' ? { active: false } : batchInfo(user);
+      replaced = await claim(user.id, normalizeCity(user.city).key, batch.active ? batch.day : today(), 1);
+    }
+    return { ok: true, replaced };
+  },
+  
   async 'base.take'({ user }, { assignment_id }) {
     requireSeller(user);
     const { data: a } = await db.from('assignments').select('id,status').eq('id', assignment_id).eq('user_id', user.id).maybeSingle();
