@@ -64,13 +64,18 @@ function applyTheme() {
 async function api(action, data = {}) {
   let r, j;
   try {
-    r = await fetch('/api/app', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-init-data': tg?.initData || '', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
-      body: JSON.stringify({ action, ...data }),
-    });
-    j = await r.json();
-  } catch { throw new Error('Нет связи с сервером. Проверьте интернет'); }
+       const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 70000);
+    try {
+      r = await fetch('/api/app', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-init-data': tg?.initData || '', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: JSON.stringify({ action, ...data }),
+        signal: ctl.signal,
+      });
+      j = await r.json();
+    } finally { clearTimeout(timer); }
+  } catch { throw new Error('Нет связи с сервером или он слишком долго отвечает. Попробуйте ещё раз'); }
   if (!r.ok) {
     if (r.status === 401 && !action.startsWith('auth.') && token) { logout(true); }
     throw new Error(j.error || 'Ошибка');
@@ -234,6 +239,16 @@ async function enter() {
   renderTabbar(); return pages.home();
 }
 
+  async function safeEnter() {
+  try { await enter(); }
+  catch (e) {
+    if (!token) return renderAuth();
+    view(`<div class="screen no-tab">${errBlock(e)}
+      <button class="btn" style="margin-top:16px" data-act="toCabinet">Повторить</button>
+      <button class="btn ghost" style="margin-top:10px" data-act="logout">Выйти</button></div>`, { back: false });
+  }
+}
+
 function roleScreen() {
   view(`<div class="screen no-tab">
     <h1 class="title">Кто вы в Hustlify?</h1>
@@ -327,8 +342,9 @@ const TABS = [['home', 'Кабинет', I.home], ['work', 'Работа', I.wor
 function renderTabbar() {
   $('#tabbar').innerHTML = TABS.map(([k, l, i]) => `<button data-act="tab" data-k="${k}" class="${S.tab === k ? 'on' : ''}" aria-label="${l}">${i}<span>${l}</span></button>`).join('');
 }
-async function go(tab) {
-  if (!S.user?.training_done && S.user?.role !== 'admin') return backTo('learn', learnHome);
+  async function go(tab) {
+  if (!S.user) return renderAuth();
+  if (!S.user.training_done && S.user.role !== 'admin') return backTo('learn', learnHome);
   S.tab = tab; renderTabbar();
   try { await pages[tab](); } catch (e) { view(`<div class="screen">${errBlock(e)}</div>`, { tabbar: true }); }
 }
@@ -339,7 +355,7 @@ async function learnHome() {
   const d = await api('learn.lessons');
   S.practiceRetryAt = d.practice_retry_at || null;
   if (S.me) S.me.practice_retry_at = S.practiceRetryAt;
-  const trained = S.user.training_done;
+  const trained = !!S.user?.training_done;
   const done = d.items.filter(i => i.passed).length, total = d.items.length;
   const retryActive = S.practiceRetryAt && new Date(S.practiceRetryAt).getTime() > Date.now();
   const rows = d.items.map(l => `
@@ -368,7 +384,7 @@ async function openLesson(id) {
   view(`<div class="screen no-tab">
     <h1 class="title">${esc(d.lesson.title)}</h1>
     <div class="prose" style="margin-top:22px">${md(d.lesson.body)}</div>
-    ${S.user.training_done ? '' : `<button class="btn" style="margin-top:26px" data-act="quizStart" data-id="${d.lesson.id}">${d.passed ? 'Пересдать тест' : 'Пройти тест'}</button>`}
+    ${S.user?.training_done ? '' : `<button class="btn" style="margin-top:26px" data-act="quizStart" data-id="${d.lesson.id}">${d.passed ? 'Пересдать тест' : 'Пройти тест'}</button>`}
   </div>`, { tabbar: false });
 }
 
@@ -874,7 +890,7 @@ const A = {
   practiceIntro: () => backTo('practiceIntro', practiceIntro),
   practiceStart: () => open('practice', practiceStart),
   practiceSay, practiceFinish,
-  async toCabinet() { loading(); await enter(); },
+  async toCabinet() { loading(); await safeEnter(); },
   wseg: d => { S.wseg = d.k; pages.work(); },
   tseg: d => { S.tseg = d.k; pages.top(); },
   aseg: d => { S.aseg = d.k; adminView(); },
@@ -1076,8 +1092,8 @@ const A = {
     const msg = `Выбрать роль «${d.k === 'seller' ? 'продаю' : 'продвигаю проект'}»? Потом её сможет изменить только администратор.`;
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
     if (!ok) return;
-    await api('role.set', { track: d.k });
-    loading(); await enter();
+        await api('role.set', { track: d.k });
+    loading(); await safeEnter();
   },
   async promoSend(d) {
     await api('promo.submit', { task_id: Number(d.id), url: val('v_url'), note: val('v_note') });
