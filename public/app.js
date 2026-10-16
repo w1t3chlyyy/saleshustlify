@@ -292,10 +292,8 @@ function bizSheet(d) {
     ${b.info ? `<div class="note">${esc(b.info)}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
     ${rows.length ? `<div class="list" style="margin:14px 0">${rows.join('')}</div>` : ''}
-       <div class="maplinks">
-      ${m.google ? linkEl(m.google, 'Открыть в Google Картах', 'btn ghost sm') : ''}
+           <div class="maplinks">
       ${m.yandex ? linkEl(m.yandex, 'Открыть в Яндекс Картах', 'btn ghost sm') : ''}
-      ${m.gis ? linkEl(m.gis, 'Открыть в 2ГИС', 'btn ghost sm') : ''}
     </div>
         ${action}
     ${['assigned', 'in_work'].includes(a.status) ? `<button class="btn ghost sm" style="margin-top:8px;width:100%" data-act="siteReport" data-id="${a.id}">У бизнеса есть сайт</button>` : ''}`);
