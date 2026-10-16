@@ -302,7 +302,10 @@ function bizSheet(d) {
       ${m.yandex ? linkEl(m.yandex, 'Открыть в Яндекс Картах', 'btn ghost sm') : ''}
     </div>
         ${action}
-    ${['assigned', 'in_work'].includes(a.status) ? `<button class="btn ghost sm" style="margin-top:8px;width:100%" data-act="siteReport" data-id="${a.id}">У бизнеса есть сайт</button>` : ''}`);
+        ${['assigned', 'in_work'].includes(a.status) ? `<div class="maplinks" style="margin-top:8px">
+      <button class="btn ghost sm" data-act="siteReport" data-id="${a.id}">У бизнеса есть сайт</button>
+      <button class="btn ghost sm" data-act="closedReport" data-id="${a.id}">Бизнеса нет / закрыт</button>
+    </div>` : ''}`);
 }
 
 async function promoWork() {
@@ -591,7 +594,7 @@ function bizCard(a) {
     ${a.status === 'in_work' && a.taken_at ? `<div class="meta mut">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
     <div class="foot">
-      ${(m.google || m.yandex) ? `<a class="btn ghost sm" href="${esc(m.google || m.yandex)}" data-act="openUrl" data-u="${esc(m.google || m.yandex)}" onclick="event.stopPropagation()">На карте</a>` : '<span></span>'}
+      ${m.yandex ? `<a class="btn ghost sm" href="${esc(m.yandex)}" data-act="openUrl" data-u="${esc(m.yandex)}">Яндекс Карты</a>` : '<span></span>'}
       ${a.status === 'assigned' ? `<button class="btn sm" data-act="take" data-id="${a.id}">Взять в работу</button>` : `<span class="mut small">Подробнее</span>`}
     </div>
   </div>`;
@@ -915,9 +918,11 @@ const A = {
       const left = res.locked_until ? fmtLeft(new Date(res.locked_until).getTime() - Date.now()) : '';
       toast(res.already
         ? `Подборка уже получена. Новую можно взять через ${left}`
-        : res.items.length
+                : res.items.length >= 5
           ? `Подборка по г. ${res.city || city} готова: ${res.items.length} бизнесов`
-          : `В г. ${res.city || city} сейчас нет свободных бизнесов без сайта. Попробуйте позже или выберите другой город.`);
+          : res.items.length
+            ? `Нашлось только ${res.items.length}. Нажмите «Получить подборку» ещё раз: поиск продолжится по новым категориям`
+            : `В г. ${res.city || city} пока не нашлось бизнесов без сайта. Нажмите ещё раз или выберите другой город.`);
       const box = $('#wbody');
       if (box) box.innerHTML = await wToday();
     } catch (e) {
@@ -1097,6 +1102,18 @@ const A = {
     toast(r.replaced ? 'Убрали из подборки и добавили замену' : 'Убрали из подборки');
     closeSheet(); pages.work();
   },
+
+    async closedReport(d) {
+    const msg = 'Бизнеса нет по этому адресу или он закрыт? Он будет убран из подборки и больше никому не выдастся.';
+    const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
+    if (!ok) return;
+    const r = await api('base.report_closed', { assignment_id: Number(d.id) });
+    S.todayData = await api('base.today', {});
+    toast(r.replaced ? 'Убрали из подборки и добавили замену' : 'Убрали из подборки');
+    closeSheet(); pages.work();
+  },
+
+  
   async roleSet(d) {
     const msg = `Выбрать роль «${d.k === 'seller' ? 'продаю' : 'продвигаю проект'}»? Потом её сможет изменить только администратор.`;
     const ok = tg?.showConfirm ? await new Promise(r => tg.showConfirm(msg, r)) : confirm(msg);
