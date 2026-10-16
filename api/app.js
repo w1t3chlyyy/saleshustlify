@@ -260,13 +260,22 @@ const H = {
     const { data: todays } = await db.from('assignments').select('status').eq('user_id', user.id).eq('day', day).neq('status', 'skipped');
     const { count: leads } = await db.from('leads').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
     const { count: won } = await db.from('assignments').select('*', { count: 'exact', head: true }).eq('user_id', user.id).eq('status', 'approved');
+    const { count: salesCount } = await db.from('sales').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
+    const requiredSales = Number(await setting('required_clients_for_base', 3)) || 3;
+    const baseUnlocked = user.role === 'admin' || (salesCount || 0) >= requiredSales;
     return {
       user: pub(user), ...pct,
       today_total: todays?.length || 0,
       today_done: (todays || []).filter(a => ['submitted', 'approved'].includes(a.status)).length,
       leads: leads || 0, approved_total: won || 0,
+      sales_count: salesCount || 0,
+      sales_needed: Math.max(0, requiredSales - (salesCount || 0)),
+      required_sales: requiredSales,
+      base_unlocked: baseUnlocked,
       mentor: mentorUsername(await setting('mentor_username', process.env.MENTOR_USERNAME || '')),
       practice_retry_at: await practiceRetryAt(user),
+      guide_url: await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
+      no_base_guide_url: await setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11'),
     };
   },
 
@@ -514,13 +523,37 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     requireTrained(user);
     const limit = await setting('daily_batch', 15);
     const isAdmin = user.role === 'admin';
+    const { count: salesCount } = await db.from('sales').select('*', { count: 'exact', head: true }).eq('user_id', user.id);
+    const requiredSales = Number(await setting('required_clients_for_base', 3)) || 3;
+    const baseUnlocked = isAdmin || (salesCount || 0) >= requiredSales;
+    const wanted = typeof city === 'string' ? city.trim() : '';
+
+    if (wanted && !baseUnlocked) {
+      throw new Http(403, `Работа по базе откроется только после закрытия ${requiredSales} клиентов (проверенная покупка с начислением процентов)`);
+    }
+
+    if (!baseUnlocked) {
+      return {
+        items: [],
+        limit,
+        city: user.city || '',
+        locked_until: null,
+        already: false,
+        guide_url: await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
+        no_base_guide_url: await setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11'),
+        base_unlocked: false,
+        sales_count: salesCount || 0,
+        sales_needed: Math.max(0, requiredSales - (salesCount || 0)),
+        required_sales: requiredSales,
+      };
+    }
+
     let batch = isAdmin ? { active: false } : batchInfo(user); // у админа нет 24-часового таймера
     let already = false;
-    const wanted = typeof city === 'string' ? city.trim() : '';
 
     if (wanted && batch.active) {
       already = true; // подборка уже на руках, новая только через 24 часа
-       } else if (wanted) {
+    } else if (wanted) {
       const target = normalizeCity(wanted);
       const day = today();
       const sameCity = !isAdmin && user.city && normalizeCity(user.city).key === target.key;
@@ -542,10 +575,10 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
           console.error('[API] refillCity error:', e.message);
           if (!got) throw new Http(503, `Не удалось загрузить бизнесы для г. ${target.name}: ${e.message}`);
         }
-        if (aborted?.()) return { aborted: true, items: [], limit, city: '', locked_until: null, already: false, guide_url: '' };
+        if (aborted?.()) return { aborted: true, items: [], limit, city: '', locked_until: null, already: false, guide_url: '', no_base_guide_url: '', base_unlocked: true, sales_count: salesCount || 0, sales_needed: 0, required_sales: requiredSales };
         got += await claim(user.id, target.key, day, limit - got);
       }
-            if (got > 0) {
+      if (got > 0) {
         const patch = { city: target.name };
         // 24 часа действуют только для полноценной подборки; если нашлось мало, не блокируем
         if (!isAdmin && got >= MIN_BATCH) patch.base_batch_at = new Date().toISOString();
@@ -567,6 +600,11 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       locked_until: batch.active ? batch.until : null,
       already,
       guide_url: await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11'),
+      no_base_guide_url: await setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11'),
+      base_unlocked: true,
+      sales_count: salesCount || 0,
+      sales_needed: 0,
+      required_sales: requiredSales,
     };
   },
 
@@ -840,6 +878,8 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
     const sent = qwen.compact(k.products, 5000).length + qwen.compact(k.cases, 3000).length;
     const full = qwen.compact(k.products, 1e9).length + qwen.compact(k.cases, 1e9).length;
     const guideUrl = await setting('base_guide_url', 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11');
+    const noBaseGuideUrl = await setting('no_base_guide_url', 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11');
+    const requiredClients = await setting('required_clients_for_base', 3);
     const { data: sItems } = await db.from('shop_items').select('*').order('id');
     return {
       ...(await stats()),
@@ -848,6 +888,8 @@ async 'quiz.start'({ user }, { lesson_id, can_edit }) {
       kb_sent: sent,
       kb_full: full,
       guide_url: guideUrl,
+      no_base_guide_url: noBaseGuideUrl,
+      required_clients_for_base: requiredClients,
       products_list: [...k.products, ...k.cases],
       shop_items_list: sItems || [],
     };

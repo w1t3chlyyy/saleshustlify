@@ -559,7 +559,7 @@ pages.home = async () => {
       ${m.next ? `<p class="mut small" style="margin:12px 0 0">До ставки ${m.next[1]}% осталось закрыть ${m.next[0] - m.approved30} бизнес(а) за 30 дней</p>` : ''}
     </div>`}
     <div class="list">
-      <button class="row" data-act="tab" data-k="work">${I.work}<div class="grow"><div class="t">${promoter ? 'Задания' : 'Взять подборку'}</div><div class="d">${promoter ? 'Видео-задания от руководителя' : 'Бизнесы без сайта в вашем городе'}</div></div>${I.chev}</button>
+      <button class="row" data-act="tab" data-k="work">${I.work}<div class="grow"><div class="t">${promoter ? 'Задания' : (m.base_unlocked ? 'Взять подборку' : 'Работа')}</div><div class="d">${promoter ? 'Видео-задания от руководителя' : (m.base_unlocked ? 'Бизнесы без сайта в вашем городе' : `База закрыта · закрыто ${m.sales_count || 0} из ${m.required_sales || 3} клиентов`)}</div></div>${I.chev}</button>
       <button class="row" data-act="mentor">${I.me}<div class="grow"><div class="t">Связаться с наставником</div><div class="d">Вопросы по работе, разбор сделок</div></div>${I.chev}</button>
       <button class="row" data-act="learnHome">${I.book}<div class="grow"><div class="t">Методичка</div><div class="d">Все материалы обучения</div></div>${I.chev}</button>
       ${promoter ? '' : `<button class="row" data-act="practiceIntro">${I.chat}<div class="grow"><div class="t">Тренировка с клиентом</div><div class="d">Отработайте возражения</div></div>${I.chev}</button>`}
@@ -573,10 +573,26 @@ const segHtml = (act, cur, items) => `<div class="seg">${items.map(([k, l]) => `
 
 pages.work = async () => {
   if (S.user.track === 'promoter') return promoWork();
-  const guideUrl = S.guideUrl || 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11';
+  if (!S.todayData) {
+    try { S.todayData = await api('base.today', {}); } catch {}
+  }
+  const guideUrl = S.todayData?.guide_url || S.guideUrl || S.me?.guide_url || 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11';
+  const noBaseGuideUrl = S.todayData?.no_base_guide_url || S.noBaseGuideUrl || S.me?.no_base_guide_url || 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11';
+  S.guideUrl = guideUrl;
+  S.noBaseGuideUrl = noBaseGuideUrl;
+  const isBaseUnlocked = S.todayData?.base_unlocked ?? (S.me?.base_unlocked ?? (S.user?.role === 'admin'));
+
+  const guideBtn = S.wseg === 'today'
+    ? (isBaseUnlocked
+        ? `<button class="btn ghost guide" data-act="openGuide" data-u="${esc(guideUrl)}">${I.book}Как работать по базе?</button>`
+        : `<button class="btn ghost guide" data-act="openNoBaseGuide" data-u="${esc(noBaseGuideUrl)}">${I.book}Как работать без базы?</button>`)
+    : S.wseg === 'leads'
+      ? `<button class="btn ghost guide" data-act="openNoBaseGuide" data-u="${esc(noBaseGuideUrl)}">${I.book}Как работать без базы?</button>`
+      : '';
+
   view(`<div class="screen"><h1 class="title">Работа</h1><p class="sub">Ищите клиентов сами или работайте по базе</p>
     ${segHtml('wseg', S.wseg, [['today', 'Сегодня'], ['history', 'История'], ['leads', 'Клиенты']])}
-    ${S.wseg === 'today' ? `<button class="btn ghost guide" data-act="openGuide" data-u="${esc(guideUrl)}">${I.book}Как работать по базе?</button>` : ''}
+    ${guideBtn}
     <div id="wbody"><div class="spin"></div></div></div>`, { tabbar: true });
   try { $('#wbody').innerHTML = await ({ today: wToday, history: wHistory, leads: wLeads })[S.wseg](); }
   catch (e) { $('#wbody').innerHTML = errBlock(e); }
@@ -604,6 +620,31 @@ async function wToday() {
   if (!S.todayData) S.todayData = await api('base.today', {});
   const d = S.todayData;
   S.guideUrl = d.guide_url || S.guideUrl;
+  S.noBaseGuideUrl = d.no_base_guide_url || S.noBaseGuideUrl;
+
+  if (!d.base_unlocked) {
+    const closedCount = d.sales_count || 0;
+    const reqCount = d.required_sales || 3;
+    return `<div class="card" style="margin-bottom:16px;text-align:center;padding:26px 18px">
+      <div style="width:60px;height:60px;border-radius:50%;background:var(--line);display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px;color:var(--fg)">
+        <svg style="width:28px;height:28px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="11" width="14" height="10" rx="3"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+        </svg>
+      </div>
+      <b style="display:block;font-family:var(--fd);font-size:18px;letter-spacing:-.02em;margin-bottom:6px">Работа по базе закрыта</b>
+      <div class="pill sm" style="display:inline-flex;margin-bottom:14px;font-weight:600">Закрыто клиентов: ${closedCount} из ${reqCount}</div>
+      <div style="background:var(--bg);border-radius:18px;padding:15px 16px;text-align:left;margin-bottom:16px;line-height:1.45">
+        <p class="mut small" style="margin:0 0 10px">
+          Работа по базе и возможность искать бизнесы открывается <b>только после закрытия ${reqCount} клиентов</b> (они правда купили продукт, прошли проверку руководителем и за них начислены проценты).
+        </p>
+        <p class="mut small" style="margin:0">
+          <b>Почему так?</b> Сначала важно научиться самостоятельно находить клиентов, вести живые переговоры и доводить сделки до реальной оплаты без готовой базы. Как только вы закроете 3 сделки — поиск по базе бизнесов в городе откроется навсегда.
+        </p>
+      </div>
+      <button class="btn" style="width:100%" data-act="wseg" data-k="leads">Перейти в раздел «Клиенты»</button>
+    </div>`;
+  }
+
   const leftMs = d.locked_until ? new Date(d.locked_until).getTime() - Date.now() : 0;
   const locked = leftMs > 0;
   const h = Math.floor(leftMs / 3600e3), m = Math.floor((leftMs % 3600e3) / 60e3);
@@ -725,6 +766,11 @@ async function aStats() {
     <h2 class="h2">Инструкция по базе (Telegraph)</h2>
     <label class="field"><span>Ссылка на статью («Как работать по базе?»)</span><input id="set_guide" placeholder="https://telegra.ph/..." value="${esc(s.guide_url || '')}"></label>
     <button class="btn sm" data-act="guideSave" style="margin-bottom:20px">Сохранить ссылку на Telegraph</button>
+
+    <h2 class="h2">Инструкция без базы (Telegraph)</h2>
+    <p class="mut small" style="margin-bottom:8px">Кнопка «Как работать без базы?» отображается в разделе «Клиенты» и на странице работы, пока закрыто меньше 3 клиентов.</p>
+    <label class="field"><span>Ссылка на статью («Как работать без базы?»)</span><input id="set_no_base_guide" placeholder="https://telegra.ph/..." value="${esc(s.no_base_guide_url || '')}"></label>
+    <button class="btn sm" data-act="noBaseGuideSave" style="margin-bottom:20px">Сохранить ссылку на статью без базы</button>
 
     <h2 class="h2">Записать продажу (Продающие)</h2>
     <label class="field"><span>Логин сотрудника</span><input id="s_login" autocapitalize="none" placeholder="логин продающего"></label>
@@ -915,6 +961,7 @@ const A = {
       S.searchCtl = null;
       S.todayData = res;
       S.guideUrl = res.guide_url || S.guideUrl;
+      S.noBaseGuideUrl = res.no_base_guide_url || S.noBaseGuideUrl;
       const left = res.locked_until ? fmtLeft(new Date(res.locked_until).getTime() - Date.now()) : '';
       toast(res.already
         ? `Подборка уже получена. Новую можно взять через ${left}`
@@ -1016,6 +1063,18 @@ const A = {
     await api('admin.setting.save', { key: 'base_guide_url', value: u });
     S.guideUrl = u;
     toast('Ссылка на Telegraph сохранена в базе данных'); aStats();
+  },
+  openNoBaseGuide(d) {
+    const u = safeUrl(d.u || S.noBaseGuideUrl || 'https://telegra.ph/Kak-rabotat-bez-bazy-Hustlify-10-11');
+    if (!u) return toast('Ссылка на статью пока не указана');
+    if (tg?.openLink) tg.openLink(u); else window.open(u, '_blank');
+  },
+  async noBaseGuideSave() {
+    const u = val('set_no_base_guide');
+    if (!u) return toast('Укажите ссылку на Telegraph');
+    await api('admin.setting.save', { key: 'no_base_guide_url', value: u });
+    S.noBaseGuideUrl = u;
+    toast('Ссылка на статью «Как работать без базы» сохранена'); aStats();
   },
   catAddSheet() {
     sheet(`<h3>Новая позиция в каталоге</h3>
