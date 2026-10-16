@@ -277,8 +277,9 @@ function bizSheet(d) {
     ${b.info ? `<div class="note">${esc(b.info)}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
     ${rows.length ? `<div class="list" style="margin:14px 0">${rows.join('')}</div>` : ''}
-    <div style="display:flex;flex-direction:column;gap:8px;margin:14px 0">
-      ${linkEl(m.yandex, 'Открыть в Яндекс Картах (карточка бизнеса)', 'btn ghost sm')}
+       <div class="maplinks">
+      ${m.google ? linkEl(m.google, 'Открыть в Google Картах', 'btn ghost sm') : ''}
+      ${m.yandex ? linkEl(m.yandex, 'Открыть в Яндекс Картах', 'btn ghost sm') : ''}
       ${m.gis ? linkEl(m.gis, 'Открыть в 2ГИС', 'btn ghost sm') : ''}
     </div>
         ${action}
@@ -552,7 +553,7 @@ pages.work = async () => {
   const guideUrl = S.guideUrl || 'https://telegra.ph/Kak-rabotat-po-baze-biznesov-Hustlify-10-11';
   view(`<div class="screen"><h1 class="title">Работа</h1><p class="sub">Ищите клиентов сами или работайте по базе</p>
     ${segHtml('wseg', S.wseg, [['today', 'Сегодня'], ['history', 'История'], ['leads', 'Клиенты']])}
-    ${S.wseg === 'today' ? `<div style="margin:0 0 16px"><button class="btn ghost" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;font-weight:600;padding:12px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.03)" data-act="openGuide" data-u="${esc(guideUrl)}">${I.book}Как работать по базе?</button></div>` : ''}
+    ${S.wseg === 'today' ? `<button class="btn ghost guide" data-act="openGuide" data-u="${esc(guideUrl)}">${I.book}Как работать по базе?</button>` : ''}
     <div id="wbody"><div class="spin"></div></div></div>`, { tabbar: true });
   try { $('#wbody').innerHTML = await ({ today: wToday, history: wHistory, leads: wLeads })[S.wseg](); }
   catch (e) { $('#wbody').innerHTML = errBlock(e); }
@@ -561,18 +562,16 @@ pages.work = async () => {
 function bizCard(a) {
   const b = a.business || {}, m = b.maps || {};
   S.assign[a.id] = a;
-  return `<div class="biz" data-act="bizSheet" data-id="${a.id}" style="cursor:pointer">
-    <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
-      <h3>${esc(b.name)}</h3>
-      <span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span>
-    </div>
+  const phone = /\d{5}/.test(b.phone || '') ? b.phone : '';
+  return `<div class="biz" data-act="bizSheet" data-id="${a.id}">
+    <div class="head"><h3>${esc(b.name)}</h3><span class="pill ${a.status === 'approved' ? 'solid' : ''}">${STATUS[a.status]}</span></div>
     ${b.category ? `<div class="meta">${esc(b.category)}</div>` : ''}
-    ${b.address ? `<div class="meta small mut">${esc(b.address)}</div>` : ''}
-    ${b.phone ? `<div class="meta small" style="color:var(--text);font-weight:500;margin-top:2px">📞 ${esc(b.phone)}</div>` : ''}
-    ${a.status === 'in_work' && a.taken_at ? `<div class="meta">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
+    ${b.address ? `<div class="meta mut">${esc(b.address)}</div>` : ''}
+    ${phone ? `<div class="phone-line">${esc(phone)}</div>` : ''}
+    ${a.status === 'in_work' && a.taken_at ? `<div class="meta mut">Взято ${new Date(a.taken_at).toLocaleDateString('ru-RU')}</div>` : ''}
     ${a.status === 'rejected' && a.reviewer_note ? `<div class="note">Комментарий проверяющего: ${esc(a.reviewer_note)}</div>` : ''}
-    <div class="foot" style="margin-top:10px;display:flex;gap:8px;align-items:center;justify-content:space-between">
-      ${m.yandex ? `<a class="btn ghost sm" href="${esc(m.yandex)}" data-act="openUrl" data-u="${esc(m.yandex)}" onclick="event.stopPropagation()">Найти на карте</a>` : ''}
+    <div class="foot">
+      ${(m.google || m.yandex) ? `<a class="btn ghost sm" href="${esc(m.google || m.yandex)}" data-act="openUrl" data-u="${esc(m.google || m.yandex)}" onclick="event.stopPropagation()">На карте</a>` : '<span></span>'}
       ${a.status === 'assigned' ? `<button class="btn sm" data-act="take" data-id="${a.id}">Взять в работу</button>` : `<span class="mut small">Подробнее</span>`}
     </div>
   </div>`;
